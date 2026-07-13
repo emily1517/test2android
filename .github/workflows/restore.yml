@@ -1,1 +1,95 @@
+name: Android Emulator Restore - Browser History
+on:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: 'Release tag of the backup to restore (e.g. avd-backup-123456)'
+        required: true
 
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Download backup release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p ~/.android screenshots
+          gh release download "${{ github.event.inputs.release_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "avd-backup.tar.gz" \
+            --output avd-backup.tar.gz
+          gh release download "${{ github.event.inputs.release_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "before.png" \
+            --output screenshots/before.png
+          gh release download "${{ github.event.inputs.release_tag }}" \
+            --repo "${{ github.repository }}" \
+            --pattern "history_before.db" \
+            --output screenshots/history_before.db
+          tar -xzf avd-backup.tar.gz -C ~/.android
+          ls -la ~/.android/avd
+
+      - name: Write verification script
+        run: |
+          mkdir -p screenshots
+          cat > verify.sh << 'EOF'
+          #!/bin/bash
+          set -e
+          adb devices
+          adb wait-for-device
+          adb root
+          adb wait-for-device
+
+          echo "=== Opening browser history page after restore ==="
+          adb shell am start -a android.intent.action.VIEW -n com.android.browser/.BrowserActivity -d "about:blank"
+          sleep 3
+          adb shell am start -n com.android.browser/com.android.browser.BrowserActivity
+          sleep 3
+          # Long-press bookmarks/history shortcut is UI-fragile; instead pull the DB directly.
+          adb pull /data/data/com.android.browser/databases/browser2.db ./screenshots/history_after.db
+
+          echo "=== Screenshot after restore ==="
+          adb shell screencap -p /sdcard/after.png
+          adb pull /sdcard/after.png ./screenshots/after.png
+          EOF
+          chmod +x verify.sh
+
+      - name: Boot restored emulator and verify
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash ${{ github.workspace }}/verify.sh
+
+      - name: Compare history DBs before vs after
+        run: |
+          echo "=== Comparing history database files ==="
+          if cmp -s screenshots/history_before.db screenshots/history_after.db; then
+            echo "PASS: history database is byte-for-byte identical after restore"
+          else
+            echo "FAIL: history database differs after restore"
+            ls -l screenshots/history_before.db screenshots/history_after.db
+            exit 1
+          fi
+
+      - name: Upload before/after screenshots for visual comparison
+        uses: actions/upload-artifact@v4
+        with:
+          name: restore-verification
+          path: screenshots/
+          retention-days: 14

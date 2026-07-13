@@ -55,7 +55,12 @@ jobs:
           adb root
           adb wait-for-device
 
-          echo "=== 0. Home screen screenshot (baseline) ==="
+          echo "=== 0a. Disabling Chrome First Run Experience ==="
+          adb shell "echo '_ --no-default-browser-check --no-first-run --disable-fre' > /data/local/tmp/chrome-command-line"
+          adb shell am force-stop com.android.chrome
+          sleep 2
+
+          echo "=== 0b. Home screen screenshot (baseline) ==="
           adb shell screencap -p /sdcard/00_home.png
           adb pull /sdcard/00_home.png ./backup/00_home.png
 
@@ -82,7 +87,7 @@ jobs:
 
             echo "Query $i: $q"
             echo "Opening: $url"
-            adb shell am start -a android.intent.action.VIEW -d "'$url'"
+            adb shell am start -n com.android.chrome/com.google.android.apps.chrome.Main -a android.intent.action.VIEW -d "'$url'"
             sleep 5
 
             adb shell screencap -p /sdcard/query_${idx}_after.png
@@ -96,7 +101,7 @@ jobs:
           adb pull /sdcard/after_browse_all.png ./backup/after_browse_all.png
 
           echo "=== 5. Opening Chrome history page and screenshotting it ==="
-          adb shell am start -a android.intent.action.VIEW -d "'chrome://history'"
+          adb shell am start -n com.android.chrome/com.google.android.apps.chrome.Main -a android.intent.action.VIEW -d "'chrome://history'"
           sleep 5
           adb shell screencap -p /sdcard/chrome_history.png
           adb pull /sdcard/chrome_history.png ./backup/chrome_history.png

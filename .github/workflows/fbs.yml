@@ -1,4 +1,4 @@
-name: Facebook Screenshot Now
+name: Facebook Screenshot
 
 on:
   workflow_dispatch:
@@ -6,67 +6,41 @@ on:
 jobs:
   fb:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup KVM
+      - name: KVM
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger
 
-      - name: Download Facebook APK on Host
-        run: |
-          mkdir -p apk
-          # Replace with real direct link from APKMirror (x86_64 version)
-          curl -L -o apk/facebook.apk "https://www.apkmirror.com/wp-content/themes/APKMirror/download.php?id=XXXXXX"
-
-      - name: Run Emulator + Install + Screenshot
+      - name: Download & Run
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
           target: google_apis
           arch: x86_64
           force-avd-creation: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
-          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
           script: |
             mkdir -p backup
-
             adb wait-for-device
-            echo "Emulator ready."
 
-            # Push APK from host to emulator
-            adb push apk/facebook.apk /sdcard/facebook.apk
+            # Download directly on host and push
+            curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook.apk" || echo "No APK at that URL"
+            adb push facebook.apk /sdcard/facebook.apk
 
-            echo "=== Installing Facebook ==="
             adb install -r /sdcard/facebook.apk 2>&1 | tee backup/install.log
 
-            echo "=== Home Screenshot ==="
-            adb shell screencap -p /sdcard/home.png
-            adb pull /sdcard/home.png backup/home.png
-
-            echo "=== Launch Facebook ==="
+            adb shell screencap -p /sdcard/home.png && adb pull /sdcard/home.png backup/
             adb shell am start -n com.facebook.katana/.LoginActivity || true
-            sleep 15
+            sleep 10
+            adb shell screencap -p /sdcard/fb.png && adb pull /sdcard/fb.png backup/facebook_screenshot.png
 
-            echo "=== Facebook Screenshot ==="
-            adb shell screencap -p /sdcard/fb.png
-            adb pull /sdcard/fb.png backup/facebook_screenshot.png || echo "Screenshot failed"
-
-            adb shell dumpsys activity | grep -i resumed > backup/foreground.txt
-
-      - name: Upload Facebook Screenshot
+      - name: Upload Screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: facebook-screenshot
           path: backup/facebook_screenshot.png
-
-      - name: Upload Debug Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fb-debug-logs
-          path: backup/

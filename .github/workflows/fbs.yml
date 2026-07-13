@@ -10,14 +10,19 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup + KVM
+      - name: Setup KVM
         run: |
-          sudo apt-get update -q
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
 
-      - name: Run Facebook
+      - name: Download Facebook APK on Host
+        run: |
+          mkdir -p apk
+          # Replace with real direct link from APKMirror (x86_64 version)
+          curl -L -o apk/facebook.apk "https://www.apkmirror.com/wp-content/themes/APKMirror/download.php?id=XXXXXX"
+
+      - name: Run Emulator + Install + Screenshot
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -30,40 +35,36 @@ jobs:
             mkdir -p backup
 
             adb wait-for-device
-            echo "Emulator booted successfully."
+            echo "Emulator ready."
 
-            # Install curl on emulator if needed + download APK
-            echo "=== Downloading Facebook APK ==="
-            adb shell "apt-get update && apt-get install -y curl" 2>/dev/null || true
-            adb shell "curl -L -o /sdcard/fb.apk https://github.com/user-attachments/files/1234567890/facebook-x86_64.apk" || \
-            echo "Download failed - use real link"
+            # Push APK from host to emulator
+            adb push apk/facebook.apk /sdcard/facebook.apk
 
             echo "=== Installing Facebook ==="
-            adb install -r /sdcard/fb.apk 2>&1 | tee backup/install.log
+            adb install -r /sdcard/facebook.apk 2>&1 | tee backup/install.log
 
-            echo "=== Taking home screenshot ==="
+            echo "=== Home Screenshot ==="
             adb shell screencap -p /sdcard/home.png
             adb pull /sdcard/home.png backup/home.png
 
-            echo "=== Launching Facebook ==="
-            adb shell am start -n com.facebook.katana/.LoginActivity || \
-            adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1
-            sleep 12
+            echo "=== Launch Facebook ==="
+            adb shell am start -n com.facebook.katana/.LoginActivity || true
+            sleep 15
 
-            echo "=== Taking Facebook Screenshot ==="
+            echo "=== Facebook Screenshot ==="
             adb shell screencap -p /sdcard/fb.png
-            adb pull /sdcard/fb.png backup/facebook_screenshot.png
+            adb pull /sdcard/fb.png backup/facebook_screenshot.png || echo "Screenshot failed"
 
-            adb shell dumpsys activity activities | grep -i resumed > backup/foreground.txt
+            adb shell dumpsys activity | grep -i resumed > backup/foreground.txt
 
-      - name: Upload Screenshot
+      - name: Upload Facebook Screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: facebook-screenshot
           path: backup/facebook_screenshot.png
 
-      - name: Upload Logs
+      - name: Upload Debug Logs
         if: always()
         uses: actions/upload-artifact@v4
         with:

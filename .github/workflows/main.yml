@@ -1,4 +1,4 @@
-name: Android Emulator Backup - Browser History
+name: Android - Backup Browser History (lightweight)
 on:
   workflow_dispatch:
 
@@ -44,9 +44,9 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: echo "AVD created."
 
-      - name: Write browse-and-screenshot script
+      - name: Write browse-and-capture script
         run: |
-          mkdir -p screenshots
+          mkdir -p backup
           cat > browse.sh << 'EOF'
           #!/bin/bash
           set -e
@@ -55,7 +55,6 @@ jobs:
           adb root
           adb wait-for-device
 
-          # Open a few pages in the built-in Browser app to build history
           for url in "https://en.wikipedia.org/wiki/Android_(operating_system)" \
                      "https://www.wikipedia.org" \
                      "https://developer.android.com"; do
@@ -64,16 +63,16 @@ jobs:
             sleep 6
           done
 
-          echo "=== Dumping browser history DB (before backup) ==="
-          adb pull /data/data/com.android.browser/databases/browser2.db ./screenshots/history_before.db || echo "history db pull failed, continuing"
+          echo "=== Pulling browser history DB ==="
+          adb pull /data/data/com.android.browser/databases/browser2.db ./backup/history_before.db
 
-          echo "=== Taking screenshot of last page ==="
+          echo "=== Screenshot after browsing ==="
           adb shell screencap -p /sdcard/before.png
-          adb pull /sdcard/before.png ./screenshots/before.png
+          adb pull /sdcard/before.png ./backup/before.png
           EOF
           chmod +x browse.sh
 
-      - name: Boot emulator, browse, screenshot, shut down
+      - name: Boot emulator, browse, capture, shut down
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -84,32 +83,25 @@ jobs:
           disable-animations: true
           script: bash ${{ github.workspace }}/browse.sh
 
-      - name: Kill emulator cleanly and archive AVD
-        run: |
-          adb emu kill || true
-          sleep 5
-          mkdir -p backup
-          tar -czf backup/avd-backup.tar.gz -C ~/.android avd
-          ls -lh backup/
+      - name: List captured backup files
+        run: ls -lh backup/
 
-      - name: Upload backup + screenshot as workflow artifacts
+      - name: Upload backup as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: avd-backup-and-screenshots
+          name: history-backup
           path: |
-            backup/avd-backup.tar.gz
-            screenshots/before.png
-            screenshots/history_before.db
+            backup/history_before.db
+            backup/before.png
           retention-days: 14
 
       - name: Publish backup as a GitHub Release asset
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: avd-backup-${{ github.run_id }}
-          name: AVD Backup ${{ github.run_id }}
+          tag_name: history-backup-${{ github.run_id }}
+          name: History Backup ${{ github.run_id }}
           files: |
-            backup/avd-backup.tar.gz
-            screenshots/before.png
-            screenshots/history_before.db
+            backup/history_before.db
+            backup/before.png
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

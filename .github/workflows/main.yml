@@ -1,4 +1,4 @@
-name: Android - Backup Browser History (lightweight)
+name: Android - Backup Browser History (debug mode)
 on:
   workflow_dispatch:
 
@@ -44,35 +44,63 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: echo "AVD created."
 
-      - name: Write browse-and-capture script
+      - name: Write diagnostic browse script
         run: |
           mkdir -p backup
           cat > browse.sh << 'EOF'
           #!/bin/bash
-          set -e
+          set +e   # do NOT abort on error - we want to capture screenshots at every stage
           adb devices
           adb wait-for-device
           adb root
           adb wait-for-device
 
+          echo "=== 0. Home screen screenshot (baseline) ==="
+          adb shell screencap -p /sdcard/00_home.png
+          adb pull /sdcard/00_home.png ./backup/00_home.png
+
+          echo "=== 1. Listing installed packages matching browser/chrome/webview ==="
+          adb shell pm list packages | grep -iE 'browser|chrome|webview' | tee ./backup/packages_found.txt
+
+          echo "=== 2. Resolving default handler for a VIEW intent (no explicit component) ==="
+          adb shell cmd package resolve-activity --brief -a android.intent.action.VIEW -d "'https://www.wikipedia.org'" | tee ./backup/resolved_activity.txt
+
+          echo "=== 3. Launching generic VIEW intent for each URL (letting system pick handler) ==="
           for url in "https://en.wikipedia.org/wiki/Android_(operating_system)" \
                      "https://www.wikipedia.org" \
                      "https://developer.android.com"; do
             echo "Opening: $url"
-            adb shell am start -a android.intent.action.VIEW -n com.android.browser/.BrowserActivity -d "'$url'"
+            adb shell am start -a android.intent.action.VIEW -d "'$url'"
             sleep 6
           done
 
-          echo "=== Pulling browser history DB ==="
-          adb pull /data/data/com.android.browser/databases/browser2.db ./backup/history_before.db
+          echo "=== 4. Screenshot after browsing attempts ==="
+          adb shell screencap -p /sdcard/01_after_browse.png
+          adb pull /sdcard/01_after_browse.png ./backup/01_after_browse.png
 
-          echo "=== Screenshot after browsing ==="
-          adb shell screencap -p /sdcard/before.png
-          adb pull /sdcard/before.png ./backup/before.png
+          echo "=== 5. Identifying resumed (foreground) app ==="
+          adb shell dumpsys activity activities | grep -i "mResumedActivity" | tee ./backup/resumed_activity.txt
+          FOREGROUND_PKG=$(adb shell dumpsys activity activities | grep -i "mResumedActivity" | sed -E 's/.*[[:space:]]([a-zA-Z0-9_.]+)\/[a-zA-Z0-9_.]+.*/\1/' | head -n1)
+          echo "Detected foreground package: $FOREGROUND_PKG"
+          echo "$FOREGROUND_PKG" > ./backup/foreground_package.txt
+
+          echo "=== 6. Attempting to locate and pull that app's data dir (best effort) ==="
+          if [ -n "$FOREGROUND_PKG" ]; then
+            adb shell run-as "$FOREGROUND_PKG" ls /data/data/"$FOREGROUND_PKG"/databases 2>&1 | tee ./backup/db_listing.txt
+            adb shell "find /data/data/$FOREGROUND_PKG -maxdepth 3 -type f" 2>&1 | tee ./backup/data_files_found.txt
+          else
+            echo "No foreground package detected." | tee ./backup/db_listing.txt
+          fi
+
+          echo "=== 7. Recent logcat errors (last 200 lines, filtered) ==="
+          adb logcat -d -t 200 | grep -iE 'error|exception|crash' > ./backup/logcat_errors.txt || true
+
+          echo "=== Diagnostic script finished (always exits 0) ==="
+          exit 0
           EOF
           chmod +x browse.sh
 
-      - name: Boot emulator, browse, capture, shut down
+      - name: Boot emulator and run diagnostics (never fails the step)
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -83,25 +111,25 @@ jobs:
           disable-animations: true
           script: bash ${{ github.workspace }}/browse.sh
 
-      - name: List captured backup files
-        run: ls -lh backup/
+      - name: Show what was captured
+        run: |
+          echo "=== Files captured in backup/ ==="
+          ls -lh backup/ || echo "backup dir empty or missing"
+          echo ""
+          echo "=== packages_found.txt ==="
+          cat backup/packages_found.txt 2>/dev/null || echo "(none)"
+          echo ""
+          echo "=== resolved_activity.txt ==="
+          cat backup/resolved_activity.txt 2>/dev/null || echo "(none)"
+          echo ""
+          echo "=== foreground_package.txt ==="
+          cat backup/foreground_package.txt 2>/dev/null || echo "(none)"
 
-      - name: Upload backup as workflow artifact
+      - name: Upload ALL diagnostics + screenshots (always runs)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: history-backup
-          path: |
-            backup/history_before.db
-            backup/before.png
+          name: browser-diagnostics
+          path: backup/
           retention-days: 14
-
-      - name: Publish backup as a GitHub Release asset
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: history-backup-${{ github.run_id }}
-          name: History Backup ${{ github.run_id }}
-          files: |
-            backup/history_before.db
-            backup/before.png
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          if-no-files-found: warn

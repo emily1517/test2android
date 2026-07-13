@@ -1,0 +1,212 @@
+name: Android - Backup Browser History (debug mode)
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  backup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-34
+
+      - name: Create AVD (if not cached)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: echo "AVD created."
+
+      - name: Write diagnostic browse script
+        run: |
+          mkdir -p backup
+          cat > browse.sh << 'EOF'
+          #!/bin/bash
+          set +e   # do NOT abort on error - we want to capture screenshots at every stage
+          adb devices
+          adb wait-for-device
+          adb root
+          adb wait-for-device
+
+          echo "=== 0. Home screen screenshot (baseline) ==="
+          adb shell screencap -p /sdcard/00_home.png
+          adb pull /sdcard/00_home.png ./backup/00_home.png
+
+          echo "=== 1. Listing installed packages matching browser/chrome/webview ==="
+          adb shell pm list packages | grep -iE 'browser|chrome|webview' | tee ./backup/packages_found.txt
+
+          echo "=== 2. Resolving default handler for a VIEW intent (no explicit component) ==="
+          adb shell cmd package resolve-activity --brief -a android.intent.action.VIEW -d "'https://www.wikipedia.org'" | tee ./backup/resolved_activity.txt
+
+          echo "=== 3. Five search queries, each with a before/after screenshot ==="
+          declare -a QUERIES=(
+            "best budget laptops 2026"
+            "how to make banana bread"
+            "latest android 15 features"
+            "cheap flights to istanbul"
+            "top hiking trails near me"
+          )
+
+          i=1
+          for q in "${QUERIES[@]}"; do
+            idx=$(printf "%02d" "$i")
+            encoded_q=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$q")
+            url="https://www.google.com/search?q=${encoded_q}"
+
+            echo "Query $i: $q"
+            echo "Opening: $url"
+            adb shell am start -a android.intent.action.VIEW -d "'$url'"
+            sleep 5
+
+            adb shell screencap -p /sdcard/query_${idx}_after.png
+            adb pull /sdcard/query_${idx}_after.png ./backup/query_${idx}_after.png
+
+            i=$((i+1))
+          done
+
+          echo "=== 4. Screenshot after all browsing attempts ==="
+          adb shell screencap -p /sdcard/after_browse_all.png
+          adb pull /sdcard/after_browse_all.png ./backup/after_browse_all.png
+
+          echo "=== 5. Opening Chrome history page and screenshotting it ==="
+          adb shell am start -a android.intent.action.VIEW -d "'chrome://history'"
+          sleep 5
+          adb shell screencap -p /sdcard/chrome_history.png
+          adb pull /sdcard/chrome_history.png ./backup/chrome_history.png
+
+          echo "=== 6. Identifying resumed (foreground) app ==="
+          adb shell dumpsys activity activities | grep -i "mResumedActivity" | tee ./backup/resumed_activity.txt
+          FOREGROUND_PKG=$(adb shell dumpsys activity activities | grep -i "mResumedActivity" | sed -E 's/.*[[:space:]]([a-zA-Z0-9_.]+)\/[a-zA-Z0-9_.]+.*/\1/' | head -n1)
+          echo "Detected foreground package: $FOREGROUND_PKG"
+          echo "$FOREGROUND_PKG" > ./backup/foreground_package.txt
+
+          echo "=== 7. Attempting to locate and pull that app's data dir (best effort) ==="
+          if [ -n "$FOREGROUND_PKG" ]; then
+            adb shell run-as "$FOREGROUND_PKG" ls /data/data/"$FOREGROUND_PKG"/databases 2>&1 | tee ./backup/db_listing.txt
+            adb shell "find /data/data/$FOREGROUND_PKG -maxdepth 3 -type f" 2>&1 | tee ./backup/data_files_found.txt
+          else
+            echo "No foreground package detected." | tee ./backup/db_listing.txt
+          fi
+
+          echo "=== 8. Recent logcat errors (last 200 lines, filtered) ==="
+          adb logcat -d -t 200 | grep -iE 'error|exception|crash' > ./backup/logcat_errors.txt || true
+
+          echo "=== Diagnostic script finished (always exits 0) ==="
+          exit 0
+          EOF
+          chmod +x browse.sh
+
+      - name: Boot emulator and run diagnostics (never fails the step)
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: true
+          script: bash ${{ github.workspace }}/browse.sh
+
+      - name: Show what was captured
+        run: |
+          echo "=== Files captured in backup/ ==="
+          ls -lh backup/ || echo "backup dir empty or missing"
+          echo ""
+          echo "=== packages_found.txt ==="
+          cat backup/packages_found.txt 2>/dev/null || echo "(none)"
+          echo ""
+          echo "=== resolved_activity.txt ==="
+          cat backup/resolved_activity.txt 2>/dev/null || echo "(none)"
+          echo ""
+          echo "=== foreground_package.txt ==="
+          cat backup/foreground_package.txt 2>/dev/null || echo "(none)"
+
+      # --- Individual artifact per screenshot, so each gets its own download link ---
+
+      - name: Upload - home screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-00-home
+          path: backup/00_home.png
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload - search query screenshots (1-5)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots-search-queries
+          path: backup/query_*.png
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload - after-browse-all screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-after-browse-all
+          path: backup/after_browse_all.png
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload - Chrome history screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-chrome-history
+          path: backup/chrome_history.png
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload - text/log diagnostics (non-image)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: text-diagnostics
+          path: |
+            backup/packages_found.txt
+            backup/resolved_activity.txt
+            backup/resumed_activity.txt
+            backup/foreground_package.txt
+            backup/db_listing.txt
+            backup/data_files_found.txt
+            backup/logcat_errors.txt
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload - everything (single combined backup, for restoration)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-diagnostics-full-backup
+          path: backup/
+          retention-days: 14
+          if-no-files-found: warn

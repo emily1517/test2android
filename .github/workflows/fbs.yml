@@ -3,8 +3,8 @@ on:
   workflow_dispatch:
 
 env:
-  EMAIL: "marlenebarhorst@momnow.seedit.cfd"
-  PASSWORD: "Pygames@12369"
+  EMAIL: "oliviadavis@jave.seedit.cfd"
+  PASSWORD: "Svhde@1883"
 
 jobs:
   install-and-screenshot:
@@ -52,6 +52,95 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: echo "AVD created."
 
+      - name: Write UI helper script (parses uiautomator XML properly)
+        run: |
+          cat > ui_helpers.py << 'PYEOF'
+          import sys, re
+          import xml.etree.ElementTree as ET
+
+          def bounds_center(bounds):
+              m = re.match(r"\[(\d+),(\d+)\]\[(\d+),(\d+)\]", bounds or "")
+              if not m:
+                  return None
+              x1, y1, x2, y2 = map(int, m.groups())
+              return ((x1 + x2) // 2, (y1 + y2) // 2)
+
+          def all_nodes(root):
+              return list(root.iter("node"))
+
+          def main():
+              path, mode = sys.argv[1], sys.argv[2]
+              try:
+                  root = ET.parse(path).getroot()
+              except ET.ParseError:
+                  print("")
+                  return
+              nodes = all_nodes(root)
+              edit_nodes = [n for n in nodes if n.get("class") == "android.widget.EditText"]
+
+              if mode == "profile_button":
+                  for n in nodes:
+                      blob = ((n.get("text") or "") + " " + (n.get("content-desc") or "")).lower()
+                      if "already have a profile" in blob:
+                          c = bounds_center(n.get("bounds"))
+                          if c:
+                              print(f"{c[0]} {c[1]}")
+                              return
+                  print("")
+
+              elif mode == "editcount":
+                  print(len(edit_nodes))
+
+              elif mode in ("email_field", "password_field"):
+                  keyword = "email" if mode == "email_field" else "password"
+                  for n in edit_nodes:
+                      blob = " ".join([
+                          n.get("resource-id") or "",
+                          n.get("text") or "",
+                          n.get("content-desc") or "",
+                      ]).lower()
+                      if keyword in blob:
+                          c = bounds_center(n.get("bounds"))
+                          if c:
+                              print(f"{c[0]} {c[1]}")
+                              return
+                  # Fallback: positional (1st field = email/mobile, 2nd = password)
+                  if edit_nodes:
+                      idx = 0 if mode == "email_field" else (1 if len(edit_nodes) > 1 else 0)
+                      c = bounds_center(edit_nodes[idx].get("bounds"))
+                      if c:
+                          print(f"{c[0]} {c[1]}")
+                          return
+                  print("")
+
+              elif mode == "field_value":
+                  idx = int(sys.argv[3])
+                  if idx < len(edit_nodes):
+                      print(edit_nodes[idx].get("text") or "")
+                  else:
+                      print("")
+
+              elif mode == "login_button":
+                  for n in nodes:
+                      blob = " ".join([
+                          n.get("text") or "",
+                          n.get("content-desc") or "",
+                          n.get("resource-id") or "",
+                      ]).lower()
+                      if re.search(r"log ?in|sign ?in", blob):
+                          c = bounds_center(n.get("bounds"))
+                          if c:
+                              print(f"{c[0]} {c[1]}")
+                              return
+                  print("")
+
+              else:
+                  print("")
+
+          if __name__ == "__main__":
+              main()
+          PYEOF
+
       - name: Write install-and-launch script
         run: |
           cat > run.sh << 'EOF'
@@ -79,150 +168,160 @@ jobs:
           echo "=== Launching app via monkey (category LAUNCHER) ==="
           adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
 
-          echo "=== Waiting for first screen (profile-picker OR login), checking every 3s up to 60s ==="
+          DUMP="backup/window_dump_current.xml"
 
-          FOUND_PROFILE_SCREEN=0
-          TAPPED_PROFILE=0
-          FOUND_LOGIN_SCREEN=0
-          LOGIN_DONE=0
-
-          # Helper: extract center coordinates of a node matching a field-name pattern
-          # Usage: get_bounds_center <dump_file> <regex_pattern>
-          get_bounds_center() {
-            local dump_file="$1"
-            local pattern="$2"
-            local bounds
-            bounds=$(grep -o "[^>]*\(${pattern}\)[^>]*bounds=\"\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]\"" "$dump_file" \
-                      | grep -o '\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]' | head -n 1)
-            if [ -z "$bounds" ]; then
-              echo ""
-              return
-            fi
-            local x1 y1 x2 y2
-            x1=$(echo "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\1/')
-            y1=$(echo "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\2/')
-            x2=$(echo "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\3/')
-            y2=$(echo "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\4/')
-            echo "$(( (x1 + x2) / 2 )) $(( (y1 + y2) / 2 ))"
+          # Redump the live UI hierarchy into $DUMP
+          refresh_dump() {
+            adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1
+            adb pull /sdcard/window_dump.xml "$DUMP" > /dev/null 2>&1
           }
 
-          for i in $(seq 1 20); do
-            sleep 3
-
-            # Dump current UI hierarchy
-            adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1
-            adb pull /sdcard/window_dump.xml backup/window_dump_${i}.xml > /dev/null 2>&1
-
-            DUMP="backup/window_dump_${i}.xml"
-
-            # --- Check for "I already have a profile" ---
-            if [ "$TAPPED_PROFILE" -eq 0 ] && grep -qi "already have a profile" "$DUMP"; then
-              echo "=== [${i}] 'I already have a profile' screen detected — screenshotting ==="
-              adb shell screencap -p /sdcard/profile_screen.png
-              adb pull /sdcard/profile_screen.png backup/profile_screen.png
-              FOUND_PROFILE_SCREEN=1
-
-              COORDS=$(get_bounds_center "$DUMP" "[Aa]lready have a profile")
-              if [ -n "$COORDS" ]; then
-                TAP_X=$(echo "$COORDS" | cut -d' ' -f1)
-                TAP_Y=$(echo "$COORDS" | cut -d' ' -f2)
-                echo "=== Tapping 'I already have a profile' at ($TAP_X, $TAP_Y) ==="
-                adb shell input tap "$TAP_X" "$TAP_Y"
-                TAPPED_PROFILE=1
-
-                sleep 2
-                echo "=== Screenshotting after tapping profile option ==="
-                adb shell screencap -p /sdcard/after_profile_tap.png
-                adb pull /sdcard/after_profile_tap.png backup/after_profile_tap.png
-              else
-                echo "!!! Could not parse bounds for 'I already have a profile' node !!!"
+          # wait_for <description> <check-command-string> <max-attempts> <interval-seconds>
+          # check-command-string is eval'd after each refresh_dump; return 0 = found
+          wait_for() {
+            local desc="$1" check="$2" max="$3" interval="$4"
+            local n=0
+            while [ "$n" -lt "$max" ]; do
+              refresh_dump
+              if eval "$check"; then
+                echo "=== Found: $desc (elapsed ~$((n * interval))s) ==="
+                return 0
               fi
+              echo "--- Still waiting for: $desc (elapsed ~$((n * interval))s) ---"
+              sleep "$interval"
+              n=$((n + 1))
+            done
+            echo "!!! TIMEOUT waiting for: $desc !!!"
+            return 1
+          }
+
+          echo "=== Step 1: wait for either 'I already have a profile' OR a real login field to appear ==="
+          wait_for "profile/login screen (post-splash)" \
+            'grep -qi "already have a profile" "$DUMP" || [ "$(python3 ui_helpers.py "$DUMP" editcount)" -ge 1 ]' \
+            20 3
+
+          if grep -qi "already have a profile" "$DUMP"; then
+            echo "=== 'I already have a profile' screen detected — screenshotting ==="
+            adb shell screencap -p /sdcard/profile_screen.png
+            adb pull /sdcard/profile_screen.png backup/profile_screen.png
+
+            COORDS=$(python3 ui_helpers.py "$DUMP" profile_button)
+            if [ -n "$COORDS" ]; then
+              TAP_X=$(echo "$COORDS" | cut -d' ' -f1)
+              TAP_Y=$(echo "$COORDS" | cut -d' ' -f2)
+              echo "=== Tapping 'I already have a profile' at ($TAP_X, $TAP_Y) ==="
+              adb shell input tap "$TAP_X" "$TAP_Y"
+
+              echo "=== Waiting for real login fields to appear after the tap ==="
+              wait_for "login form (EditText fields)" \
+                '[ "$(python3 ui_helpers.py "$DUMP" editcount)" -ge 1 ]' \
+                15 2
+
+              echo "=== Screenshotting after tapping profile option ==="
+              adb shell screencap -p /sdcard/after_profile_tap.png
+              adb pull /sdcard/after_profile_tap.png backup/after_profile_tap.png
+            else
+              echo "!!! Could not parse bounds for 'I already have a profile' node !!!"
+            fi
+          else
+            echo "=== Login form appeared directly (no separate profile screen) ==="
+          fi
+
+          echo "=== Screenshotting login screen ==="
+          adb shell screencap -p /sdcard/login_screen.png
+          adb pull /sdcard/login_screen.png backup/login_screen.png
+
+          echo "=== Step 2: fill email field (with verification + retry) ==="
+          EMAIL_FILLED=0
+          for attempt in 1 2 3; do
+            refresh_dump
+            EMAIL_COORDS=$(python3 ui_helpers.py "$DUMP" email_field)
+            if [ -z "$EMAIL_COORDS" ]; then
+              echo "!!! Attempt $attempt: could not locate email field, retrying... !!!"
+              sleep 2
               continue
             fi
+            EX=$(echo "$EMAIL_COORDS" | cut -d' ' -f1)
+            EY=$(echo "$EMAIL_COORDS" | cut -d' ' -f2)
+            echo "=== Attempt $attempt: tapping email field at ($EX, $EY) ==="
+            adb shell input tap "$EX" "$EY"
+            sleep 1
+            adb shell input text "${EMAIL//@/\\@}"
+            sleep 1
 
-            # --- Check for login screen (adjust keywords to match your app) ---
-            if [ "$FOUND_LOGIN_SCREEN" -eq 0 ] && grep -Eqi 'log ?in|sign ?in|email|password' "$DUMP"; then
-              echo "=== [${i}] Login screen detected — screenshotting ==="
-              adb shell screencap -p /sdcard/login_screen.png
-              adb pull /sdcard/login_screen.png backup/login_screen.png
-              FOUND_LOGIN_SCREEN=1
-
-              # Re-dump right before interacting, in case the screen animated in
-              adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1
-              adb pull /sdcard/window_dump.xml backup/window_dump_login.xml > /dev/null 2>&1
-              LOGIN_DUMP="backup/window_dump_login.xml"
-
-              # --- Email field ---
-              EMAIL_COORDS=$(get_bounds_center "$LOGIN_DUMP" "resource-id=\"[^\"]*email[^\"]*\"\|text=\"[Ee]mail\"\|hint=\"[Ee]mail\"")
-              if [ -n "$EMAIL_COORDS" ]; then
-                EX=$(echo "$EMAIL_COORDS" | cut -d' ' -f1)
-                EY=$(echo "$EMAIL_COORDS" | cut -d' ' -f2)
-                echo "=== Tapping email field at ($EX, $EY) ==="
-                adb shell input tap "$EX" "$EY"
-                sleep 1
-                echo "=== Typing email ==="
-                adb shell input text "${EMAIL//@/\\@}"
-                sleep 1
-              else
-                echo "!!! Could not find email field bounds !!!"
-              fi
-
-              # --- Password field ---
-              PASS_COORDS=$(get_bounds_center "$LOGIN_DUMP" "resource-id=\"[^\"]*password[^\"]*\"\|text=\"[Pp]assword\"\|hint=\"[Pp]assword\"")
-              if [ -n "$PASS_COORDS" ]; then
-                PX=$(echo "$PASS_COORDS" | cut -d' ' -f1)
-                PY=$(echo "$PASS_COORDS" | cut -d' ' -f2)
-                echo "=== Tapping password field at ($PX, $PY) ==="
-                adb shell input tap "$PX" "$PY"
-                sleep 1
-                echo "=== Typing password ==="
-                adb shell input text "${PASSWORD//@/\\@}"
-                sleep 1
-              else
-                echo "!!! Could not find password field bounds !!!"
-              fi
-
-              echo "=== Screenshotting after entering credentials ==="
-              adb shell screencap -p /sdcard/after_credentials_entered.png
-              adb pull /sdcard/after_credentials_entered.png backup/after_credentials_entered.png
-
-              # Dismiss keyboard so it doesn't cover the login button
-              adb shell input keyevent 111  # KEYCODE_ESCAPE, hides soft keyboard on most devices
-              sleep 1
-
-              # Re-dump to locate the login button now that keyboard is gone
-              adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1
-              adb pull /sdcard/window_dump.xml backup/window_dump_before_login_tap.xml > /dev/null 2>&1
-              BTN_DUMP="backup/window_dump_before_login_tap.xml"
-
-              # --- Login button ---
-              LOGIN_BTN_COORDS=$(get_bounds_center "$BTN_DUMP" "text=\"[Ll]og ?[Ii]n\"\|text=\"[Ss]ign ?[Ii]n\"\|resource-id=\"[^\"]*login[^\"]*\"")
-              if [ -n "$LOGIN_BTN_COORDS" ]; then
-                LBX=$(echo "$LOGIN_BTN_COORDS" | cut -d' ' -f1)
-                LBY=$(echo "$LOGIN_BTN_COORDS" | cut -d' ' -f2)
-                echo "=== Tapping Login button at ($LBX, $LBY) ==="
-                adb shell input tap "$LBX" "$LBY"
-                LOGIN_DONE=1
-
-                sleep 3
-                echo "=== Screenshotting after login tap ==="
-                adb shell screencap -p /sdcard/after_login_tap.png
-                adb pull /sdcard/after_login_tap.png backup/after_login_tap.png
-              else
-                echo "!!! Could not find Login button bounds !!!"
-              fi
-            fi
-
-            echo "Checked at $((i*3))s — profile_screen=$FOUND_PROFILE_SCREEN tapped=$TAPPED_PROFILE login_screen=$FOUND_LOGIN_SCREEN login_done=$LOGIN_DONE"
-
-            # Stop early once login flow is fully done
-            if [ "$LOGIN_DONE" -eq 1 ]; then
-              echo "=== Login flow complete, exiting loop early ==="
+            refresh_dump
+            VALUE=$(python3 ui_helpers.py "$DUMP" field_value 0)
+            if [ -n "$VALUE" ]; then
+              echo "=== Email field verified non-empty: [$VALUE] ==="
+              EMAIL_FILLED=1
               break
             fi
+            echo "!!! Email field still empty after typing, retrying (attempt $attempt) !!!"
           done
+          [ "$EMAIL_FILLED" -eq 0 ] && echo "!!! WARNING: email field could not be verified as filled !!!"
 
-          echo "=== Done. Screenshots saved in backup/: profile_screen.png, after_profile_tap.png, login_screen.png, after_credentials_entered.png, after_login_tap.png ==="
+          echo "=== Step 3: fill password field (with verification + retry) ==="
+          PASSWORD_FILLED=0
+          for attempt in 1 2 3; do
+            refresh_dump
+            PASS_COORDS=$(python3 ui_helpers.py "$DUMP" password_field)
+            if [ -z "$PASS_COORDS" ]; then
+              echo "!!! Attempt $attempt: could not locate password field, retrying... !!!"
+              sleep 2
+              continue
+            fi
+            PX=$(echo "$PASS_COORDS" | cut -d' ' -f1)
+            PY=$(echo "$PASS_COORDS" | cut -d' ' -f2)
+            echo "=== Attempt $attempt: tapping password field at ($PX, $PY) ==="
+            adb shell input tap "$PX" "$PY"
+            sleep 1
+            adb shell input text "${PASSWORD//@/\\@}"
+            sleep 1
+
+            refresh_dump
+            VALUE=$(python3 ui_helpers.py "$DUMP" field_value 1)
+            if [ -n "$VALUE" ]; then
+              echo "=== Password field verified non-empty ==="
+              PASSWORD_FILLED=1
+              break
+            fi
+            echo "!!! Password field still empty after typing, retrying (attempt $attempt) !!!"
+          done
+          [ "$PASSWORD_FILLED" -eq 0 ] && echo "!!! WARNING: password field could not be verified as filled !!!"
+
+          echo "=== Screenshotting after entering credentials ==="
+          adb shell screencap -p /sdcard/after_credentials_entered.png
+          adb pull /sdcard/after_credentials_entered.png backup/after_credentials_entered.png
+
+          # Dismiss keyboard so it doesn't cover the login button
+          adb shell input keyevent 111
+          sleep 1
+
+          echo "=== Step 4: wait for and tap Login button ==="
+          LOGIN_DONE=0
+          if [ "$EMAIL_FILLED" -eq 1 ] && [ "$PASSWORD_FILLED" -eq 1 ]; then
+            wait_for "Login button" \
+              '[ -n "$(python3 ui_helpers.py "$DUMP" login_button)" ]' \
+              10 2
+
+            LOGIN_BTN_COORDS=$(python3 ui_helpers.py "$DUMP" login_button)
+            if [ -n "$LOGIN_BTN_COORDS" ]; then
+              LBX=$(echo "$LOGIN_BTN_COORDS" | cut -d' ' -f1)
+              LBY=$(echo "$LOGIN_BTN_COORDS" | cut -d' ' -f2)
+              echo "=== Tapping Login button at ($LBX, $LBY) ==="
+              adb shell input tap "$LBX" "$LBY"
+              LOGIN_DONE=1
+
+              sleep 3
+              echo "=== Screenshotting after login tap ==="
+              adb shell screencap -p /sdcard/after_login_tap.png
+              adb pull /sdcard/after_login_tap.png backup/after_login_tap.png
+            else
+              echo "!!! Could not find Login button bounds !!!"
+            fi
+          else
+            echo "!!! Skipping Login tap because email/password were not confirmed filled !!!"
+          fi
 
           echo "=== Confirming resumed activity ==="
           adb shell dumpsys activity activities | grep -i mResumedActivity | tee backup/resumed_activity.txt

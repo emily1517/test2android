@@ -100,24 +100,58 @@ jobs:
             adb shell "settings put global webview_user_agent '$SAMSUNG_UA'"
 
             echo "=== Downloading Facebook APK ==="
-            # NOTE: this must point at an APK YOU host (e.g. a GitHub Release asset in this
-            # repo, or something pulled via your rclone/Drive pipeline). There is no official
-            # direct-download APK URL from Meta — the previous URL just saved github.com's HTML.
             curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
 
+            echo "=== Verifying downloaded file is a real APK ==="
+            ls -la facebook.apk
+            file facebook.apk
+            unzip -l facebook.apk | head -5 || echo "WARNING: facebook.apk is not a valid zip/apk — download likely returned an error page, not the real file."
+
+            echo "=== Home screen BEFORE install (baseline) ==="
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/01-home-before-install.png
+
             echo "=== Installing Facebook App ==="
-            adb install -r -d facebook.apk
+            adb install -r -d facebook.apk 2>&1 | tee /tmp/install-output.txt
+
+            echo "=== Confirming package is actually present on device ==="
+            adb shell pm list packages | grep -i facebook > /tmp/pkg-check.txt || echo "com.facebook.katana NOT found in installed packages list." > /tmp/pkg-check.txt
+            cat /tmp/pkg-check.txt
 
             echo "=== Launching Facebook App ==="
             adb shell input keyevent 82
-            adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1
+            adb shell am start -n com.facebook.katana/com.facebook.katana.LoginActivity || adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1
 
-            echo "Giving Facebook 15 seconds to initialize..."
+            echo "Waiting 5 seconds, capturing early screenshot..."
+            sleep 5
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/02-launch-plus-5s.png
+
+            echo "Waiting another 10 seconds, capturing mid screenshot..."
+            sleep 10
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/03-launch-plus-15s.png
+
+            echo "Waiting another 15 seconds, capturing late screenshot..."
             sleep 15
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/04-launch-plus-30s.png
 
-            echo "=== Capturing Verification Screenshot ==="
-            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/facebook-samsung-success.png
-            echo "Workflow process finished successfully!"
+            echo "=== Checking what activity is actually in the foreground ==="
+            adb shell dumpsys activity activities > /tmp/activity-dump.txt || true
+            grep -i "mResumedActivity\|mFocusedApp" /tmp/activity-dump.txt > /tmp/foreground-activity.txt || echo "no foreground activity lines found" > /tmp/foreground-activity.txt
+            cat /tmp/foreground-activity.txt
+
+            echo "=== Checking if the process is even alive (crash detection) ==="
+            adb shell pidof com.facebook.katana > /tmp/facebook-pid.txt || echo "com.facebook.katana is NOT running (crashed or never started)." > /tmp/facebook-pid.txt
+            cat /tmp/facebook-pid.txt
+
+            echo "=== Dumping recent logcat for crash evidence ==="
+            adb logcat -d -t 3000 > ${{ github.workspace }}/emulator-screenshots/full-logcat.txt
+            grep -i "facebook\|FATAL\|AndroidRuntime\|Fatal signal" ${{ github.workspace }}/emulator-screenshots/full-logcat.txt > ${{ github.workspace }}/emulator-screenshots/facebook-relevant-logcat.txt || echo "No facebook-related crash lines found." > ${{ github.workspace }}/emulator-screenshots/facebook-relevant-logcat.txt
+
+            cp /tmp/install-output.txt ${{ github.workspace }}/emulator-screenshots/install-output.txt
+            cp /tmp/pkg-check.txt ${{ github.workspace }}/emulator-screenshots/pkg-check.txt
+            cp /tmp/foreground-activity.txt ${{ github.workspace }}/emulator-screenshots/foreground-activity.txt
+            cp /tmp/facebook-pid.txt ${{ github.workspace }}/emulator-screenshots/facebook-pid.txt
+
+            echo "Workflow finished — upload all files in emulator-screenshots for full diagnosis, not just the screenshots."
 
       - name: Upload Screenshot Artifacts
         uses: actions/upload-artifact@v4

@@ -2,6 +2,10 @@ name: Android - Install Facebook APK (screenshot proof)
 on:
   workflow_dispatch:
 
+env:
+  EMAIL: "marlenebarhorst@momnow.seedit.cfd"
+  PASSWORD: "Pygames@12369"
+
 jobs:
   install-and-screenshot:
     runs-on: ubuntu-latest
@@ -80,6 +84,27 @@ jobs:
           FOUND_PROFILE_SCREEN=0
           TAPPED_PROFILE=0
           FOUND_LOGIN_SCREEN=0
+          LOGIN_DONE=0
+
+          # Helper: extract center coordinates of a node matching a field-name pattern
+          # Usage: get_bounds_center <dump_file> <regex_pattern>
+          get_bounds_center() {
+            local dump_file="$1"
+            local pattern="$2"
+            local bounds
+            bounds=$(grep -o "[^>]*\(${pattern}\)[^>]*bounds=\"\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]\"" "$dump_file" \
+                      | grep -o '\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]' | head -n 1)
+            if [ -z "$bounds" ]; then
+              echo ""
+              return
+            fi
+            local x1 y1 x2 y2
+            x1=$(echo "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\1/')
+            y1=$(echo "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\2/')
+            x2=$(echo "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\3/')
+            y2=$(echo "$bounds" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\4/')
+            echo "$(( (x1 + x2) / 2 )) $(( (y1 + y2) / 2 ))"
+          }
 
           for i in $(seq 1 20); do
             sleep 3
@@ -97,17 +122,10 @@ jobs:
               adb pull /sdcard/profile_screen.png backup/profile_screen.png
               FOUND_PROFILE_SCREEN=1
 
-              # Extract bounds of the node containing the text, e.g. bounds="[x1,y1][x2,y2]"
-              BOUNDS=$(grep -o 'text="[^"]*[Aa]lready have a profile[^"]*"[^>]*bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' "$DUMP" | grep -o '\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]' | head -n 1)
-
-              if [ -n "$BOUNDS" ]; then
-                X1=$(echo "$BOUNDS" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\1/')
-                Y1=$(echo "$BOUNDS" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\2/')
-                X2=$(echo "$BOUNDS" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\3/')
-                Y2=$(echo "$BOUNDS" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\4/')
-                TAP_X=$(( (X1 + X2) / 2 ))
-                TAP_Y=$(( (Y1 + Y2) / 2 ))
-
+              COORDS=$(get_bounds_center "$DUMP" "[Aa]lready have a profile")
+              if [ -n "$COORDS" ]; then
+                TAP_X=$(echo "$COORDS" | cut -d' ' -f1)
+                TAP_Y=$(echo "$COORDS" | cut -d' ' -f2)
                 echo "=== Tapping 'I already have a profile' at ($TAP_X, $TAP_Y) ==="
                 adb shell input tap "$TAP_X" "$TAP_Y"
                 TAPPED_PROFILE=1
@@ -128,18 +146,83 @@ jobs:
               adb shell screencap -p /sdcard/login_screen.png
               adb pull /sdcard/login_screen.png backup/login_screen.png
               FOUND_LOGIN_SCREEN=1
+
+              # Re-dump right before interacting, in case the screen animated in
+              adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1
+              adb pull /sdcard/window_dump.xml backup/window_dump_login.xml > /dev/null 2>&1
+              LOGIN_DUMP="backup/window_dump_login.xml"
+
+              # --- Email field ---
+              EMAIL_COORDS=$(get_bounds_center "$LOGIN_DUMP" "resource-id=\"[^\"]*email[^\"]*\"\|text=\"[Ee]mail\"\|hint=\"[Ee]mail\"")
+              if [ -n "$EMAIL_COORDS" ]; then
+                EX=$(echo "$EMAIL_COORDS" | cut -d' ' -f1)
+                EY=$(echo "$EMAIL_COORDS" | cut -d' ' -f2)
+                echo "=== Tapping email field at ($EX, $EY) ==="
+                adb shell input tap "$EX" "$EY"
+                sleep 1
+                echo "=== Typing email ==="
+                adb shell input text "${EMAIL//@/\\@}"
+                sleep 1
+              else
+                echo "!!! Could not find email field bounds !!!"
+              fi
+
+              # --- Password field ---
+              PASS_COORDS=$(get_bounds_center "$LOGIN_DUMP" "resource-id=\"[^\"]*password[^\"]*\"\|text=\"[Pp]assword\"\|hint=\"[Pp]assword\"")
+              if [ -n "$PASS_COORDS" ]; then
+                PX=$(echo "$PASS_COORDS" | cut -d' ' -f1)
+                PY=$(echo "$PASS_COORDS" | cut -d' ' -f2)
+                echo "=== Tapping password field at ($PX, $PY) ==="
+                adb shell input tap "$PX" "$PY"
+                sleep 1
+                echo "=== Typing password ==="
+                adb shell input text "${PASSWORD//@/\\@}"
+                sleep 1
+              else
+                echo "!!! Could not find password field bounds !!!"
+              fi
+
+              echo "=== Screenshotting after entering credentials ==="
+              adb shell screencap -p /sdcard/after_credentials_entered.png
+              adb pull /sdcard/after_credentials_entered.png backup/after_credentials_entered.png
+
+              # Dismiss keyboard so it doesn't cover the login button
+              adb shell input keyevent 111  # KEYCODE_ESCAPE, hides soft keyboard on most devices
+              sleep 1
+
+              # Re-dump to locate the login button now that keyboard is gone
+              adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1
+              adb pull /sdcard/window_dump.xml backup/window_dump_before_login_tap.xml > /dev/null 2>&1
+              BTN_DUMP="backup/window_dump_before_login_tap.xml"
+
+              # --- Login button ---
+              LOGIN_BTN_COORDS=$(get_bounds_center "$BTN_DUMP" "text=\"[Ll]og ?[Ii]n\"\|text=\"[Ss]ign ?[Ii]n\"\|resource-id=\"[^\"]*login[^\"]*\"")
+              if [ -n "$LOGIN_BTN_COORDS" ]; then
+                LBX=$(echo "$LOGIN_BTN_COORDS" | cut -d' ' -f1)
+                LBY=$(echo "$LOGIN_BTN_COORDS" | cut -d' ' -f2)
+                echo "=== Tapping Login button at ($LBX, $LBY) ==="
+                adb shell input tap "$LBX" "$LBY"
+                LOGIN_DONE=1
+
+                sleep 3
+                echo "=== Screenshotting after login tap ==="
+                adb shell screencap -p /sdcard/after_login_tap.png
+                adb pull /sdcard/after_login_tap.png backup/after_login_tap.png
+              else
+                echo "!!! Could not find Login button bounds !!!"
+              fi
             fi
 
-            echo "Checked at $((i*3))s — profile_screen=$FOUND_PROFILE_SCREEN tapped=$TAPPED_PROFILE login_screen=$FOUND_LOGIN_SCREEN"
+            echo "Checked at $((i*3))s — profile_screen=$FOUND_PROFILE_SCREEN tapped=$TAPPED_PROFILE login_screen=$FOUND_LOGIN_SCREEN login_done=$LOGIN_DONE"
 
-            # Stop early once both milestones are done (tap made, login screen also seen)
-            if [ "$TAPPED_PROFILE" -eq 1 ] && [ "$FOUND_LOGIN_SCREEN" -eq 1 ]; then
-              echo "=== Both steps complete, exiting loop early ==="
+            # Stop early once login flow is fully done
+            if [ "$LOGIN_DONE" -eq 1 ]; then
+              echo "=== Login flow complete, exiting loop early ==="
               break
             fi
           done
 
-          echo "=== Done. Screenshots saved in backup/: profile_screen.png, after_profile_tap.png, login_screen.png ==="
+          echo "=== Done. Screenshots saved in backup/: profile_screen.png, after_profile_tap.png, login_screen.png, after_credentials_entered.png, after_login_tap.png ==="
 
           echo "=== Confirming resumed activity ==="
           adb shell dumpsys activity activities | grep -i mResumedActivity | tee backup/resumed_activity.txt
@@ -178,6 +261,11 @@ jobs:
           name: facebook-install-screenshot
           path: |
             backup/facebook_installed.png
+            backup/profile_screen.png
+            backup/after_profile_tap.png
+            backup/login_screen.png
+            backup/after_credentials_entered.png
+            backup/after_login_tap.png
             backup/package_check.txt
             backup/all_packages.txt
             backup/resumed_activity.txt

@@ -6,7 +6,7 @@ on:
 jobs:
   fb:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
 
@@ -16,39 +16,52 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger
 
-      - name: Download APK from Release + Run
+      - name: Install Facebook + Screenshot
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
           target: google_apis
           arch: x86_64
           force-avd-creation: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
           disable-animations: true
           script: |
             mkdir -p backup
 
             adb wait-for-device
+            echo "Emulator ready."
 
-            # Download from your GitHub Release
+            # Download APK
             curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
 
-            adb push facebook.apk /sdcard/facebook.apk
+            # Push to a writable location
+            adb push facebook.apk /data/local/tmp/facebook.apk
 
-            echo "=== Installing ==="
-            adb install -r /sdcard/facebook.apk 2>&1 | tee backup/install.log
+            echo "=== Installing Facebook ==="
+            adb install -r /data/local/tmp/facebook.apk 2>&1 | tee backup/install.log
 
-            adb shell screencap -p /sdcard/home.png && adb pull /sdcard/home.png backup/
-            
+            echo "=== Taking Home Screenshot ==="
+            adb shell screencap -p /sdcard/home.png
+            adb pull /sdcard/home.png backup/home.png || true
+
             echo "=== Launching Facebook ==="
             adb shell am start -n com.facebook.katana/.LoginActivity || true
             sleep 15
 
-            adb shell screencap -p /sdcard/fb.png && adb pull /sdcard/fb.png backup/facebook_launched.png
+            echo "=== Taking Facebook Screenshot ==="
+            adb shell screencap -p /sdcard/fb.png
+            adb pull /sdcard/fb.png backup/facebook_launched.png || true
 
       - name: Upload Screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: facebook-screenshot
+          name: facebook-launched-screenshot
           path: backup/facebook_launched.png
+
+      - name: Upload Logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fb-install-logs
+          path: backup/

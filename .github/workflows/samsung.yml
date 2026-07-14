@@ -103,7 +103,7 @@ jobs:
             # NOTE: this must point at an APK YOU host (e.g. a GitHub Release asset in this
             # repo, or something pulled via your rclone/Drive pipeline). There is no official
             # direct-download APK URL from Meta — the previous URL just saved github.com's HTML.
-            curl -L -o facebook.apk "REPLACE_WITH_YOUR_HOSTED_APK_URL"
+            curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
 
             echo "=== Installing Facebook App ==="
             adb install -r -d facebook.apk

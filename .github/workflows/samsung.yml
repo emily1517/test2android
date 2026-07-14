@@ -1,4 +1,4 @@
-name: Install Facebook on samsung
+name: Install Facebook on Samsung Spoofed Emulator
 
 on:
   push:
@@ -7,7 +7,8 @@ on:
 
 jobs:
   run-emulator:
-    runs-on: macos-13
+    # CHANGE THIS: Upgraded from macos-13 to the active Apple Silicon runner
+    runs-on: macos-15
 
     steps:
       - name: Checkout Repository
@@ -27,7 +28,8 @@ jobs:
         with:
           api-level: 34
           target: google_apis
-          arch: x86_64
+          # CHANGE THIS: Match architecture to the Apple Silicon runner (arm64-v8a)
+          arch: arm64-v8a
           force-avd-creation: true
           disable-animations: true 
           emulator-options: -no-window -gpu off -no-audio -no-boot-anim -writable-system
@@ -53,28 +55,18 @@ jobs:
             sleep 15
             
             echo "=== Downloading Facebook APK ==="
-            # Pull down the target APK via curl from the designated repo
-            curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
+            curl -L -o facebook.apk "https://github.com"
             
             echo "=== Installing Facebook App ==="
-            # Force install the app (-r keeps configurations, -d allows downgrade if needed)
             adb install -r -d facebook.apk
             
             echo "=== Launching Facebook App ==="
-            # Wake up the screen and unlock it so app loads into interactive frame buffer
             adb shell input keyevent 82
-            
-            # Launch the primary activity wrapper belonging to Facebook core
             adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1
-            
-            # Allow the application runtime window 8 seconds to boot up and initialize
             sleep 8
             
             echo "=== Capturing Verification Screenshot ==="
-            # Take a full UI snapshot of the device running Facebook inside the Samsung environment
             adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/facebook-samsung-success.png
-            
-            echo "Process completed successfully!"
 
       - name: Upload Screenshot Artifacts
         uses: actions/upload-artifact@v4

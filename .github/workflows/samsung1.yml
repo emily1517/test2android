@@ -87,7 +87,7 @@ jobs:
             adb install -r -d facebook.apk
 
             echo "=== Using ui_helpers.py from repo ==="
-            # ui_helpers.py is checked out with the repo (scripts/ui_helpers.py) - no heredoc needed
+            # ui_helpers.py is checked out with the repo (see scripts/ui_helpers.py) - no heredoc needed
 
             # ================ LOGIN AUTOMATION ================
             echo "=== Starting Facebook Login Automation ==="
@@ -98,8 +98,24 @@ jobs:
 
             mkdir -p backup
 
-            # >>> PASTE YOUR LOGIN AUTOMATION STEPS HERE <
-            # Nothing populates backup/ until this section is filled in.
+            # >>> PASTE YOUR LOGIN AUTOMATION STEPS HERE <<<
+            # This section was placeholder comments in the original file - no actual
+            # commands were present, so nothing populated backup/. Paste the real
+            # adb/uiautomator steps here (launch app, tap fields, screenshot, etc.)
+
+            echo "=== Waiting for post-login screen to settle ==="
+            sleep 5
+
+            echo "=== Capturing screenshot after login ==="
+            adb exec-out screencap -p > backup/after_login.png
+            echo "Screenshot saved: backup/after_login.png ($(wc -c < backup/after_login.png) bytes)"
 
             echo "=== Copying artifacts ==="
             cp -r backup/* ${{ github.workspace }}/emulator-screenshots/ 2>/dev/null || true
+
+      - name: Upload Screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: emulator-screenshots
+          path: ${{ github.workspace }}/emulator-screenshots
+          if-no-files-found: warn

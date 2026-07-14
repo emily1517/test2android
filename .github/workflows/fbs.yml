@@ -16,7 +16,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger
 
-      - name: Install Facebook + Screenshot
+      - name: Install & Launch Facebook
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -29,39 +29,25 @@ jobs:
             mkdir -p backup
 
             adb wait-for-device
-            echo "Emulator ready."
 
-            # Download APK
             curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
 
-            # Push to a writable location
+            echo "Pushing APK..."
             adb push facebook.apk /data/local/tmp/facebook.apk
 
-            echo "=== Installing Facebook ==="
+            echo "=== Installing ==="
+            ls -l /data/local/tmp/ | tee backup/push_check.txt
             adb install -r /data/local/tmp/facebook.apk 2>&1 | tee backup/install.log
 
-            echo "=== Taking Home Screenshot ==="
+            echo "=== Home Screenshot ==="
             adb shell screencap -p /sdcard/home.png
-            adb pull /sdcard/home.png backup/home.png || true
+            adb pull /sdcard/home.png backup/home.png
 
-            echo "=== Launching Facebook ==="
+            echo "=== Trying to Launch Facebook ==="
+            adb shell pm list packages | grep facebook | tee backup/packages.txt
             adb shell am start -n com.facebook.katana/.LoginActivity || true
-            sleep 15
+            sleep 12
 
-            echo "=== Taking Facebook Screenshot ==="
+            echo "=== Final Screenshot ==="
             adb shell screencap -p /sdcard/fb.png
-            adb pull /sdcard/fb.png backup/facebook_launched.png || true
-
-      - name: Upload Screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: facebook-launched-screenshot
-          path: backup/facebook_launched.png
-
-      - name: Upload Logs
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: fb-install-logs
-          path: backup/
+            adb pull /sdcard/fb.png backup/facebook_launched.png

@@ -63,10 +63,7 @@ jobs:
             adb start-server
 
             echo "=== Waiting for Android Device Core Loop to Connect ==="
-            until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do
-              echo "Emulator is still booting... Checking again in 10 seconds."
-              sleep 10
-            done
+            until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do echo "Emulator is still booting... Checking again in 10 seconds."; sleep 10; done
 
             echo "=== Device Fully Booted! Starting Samsung Spoofing ==="
             adb root
@@ -87,10 +84,7 @@ jobs:
             echo "Waiting for runtime framework to recover..."
             sleep 20
 
-            until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do
-              echo "Waiting for device framework restart to finish..."
-              sleep 5
-            done
+            until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do echo "Waiting for device framework restart to finish..."; sleep 5; done
 
             echo "=== Downloading Facebook APK ==="
             # NOTE: this must point at an APK YOU host (e.g. a GitHub Release asset in this

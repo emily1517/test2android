@@ -16,7 +16,7 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger
 
-      - name: Install & Launch Facebook
+      - name: Facebook Install & Screenshot
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -32,21 +32,21 @@ jobs:
 
             curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
 
-            echo "Pushing APK..."
-            adb push facebook.apk /data/local/tmp/facebook.apk
+            echo "=== Pushing APK ==="
+            adb push facebook.apk /sdcard/Download/facebook.apk
 
             echo "=== Installing ==="
-            ls -l /data/local/tmp/ | tee backup/push_check.txt
-            adb install -r /data/local/tmp/facebook.apk 2>&1 | tee backup/install.log
+            adb install -r /sdcard/Download/facebook.apk 2>&1 | tee backup/install.log
+
+            adb shell pm list packages | grep -i facebook | tee backup/packages.txt
 
             echo "=== Home Screenshot ==="
             adb shell screencap -p /sdcard/home.png
-            adb pull /sdcard/home.png backup/home.png
+            adb pull /sdcard/home.png backup/
 
-            echo "=== Trying to Launch Facebook ==="
-            adb shell pm list packages | grep facebook | tee backup/packages.txt
-            adb shell am start -n com.facebook.katana/.LoginActivity || true
-            sleep 12
+            echo "=== Launching ==="
+            adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1 || true
+            sleep 15
 
             echo "=== Final Screenshot ==="
             adb shell screencap -p /sdcard/fb.png

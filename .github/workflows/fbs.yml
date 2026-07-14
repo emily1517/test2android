@@ -1,53 +1,89 @@
-name: Facebook Screenshot Now
-
+name: Android - Install Facebook APK (screenshot proof)
 on:
   workflow_dispatch:
 
 jobs:
-  fb:
+  install-and-screenshot:
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
-      - name: Enable KVM
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
 
-      - name: Facebook Install & Screenshot
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Download Facebook APK
+        run: |
+          mkdir -p apk backup
+          curl -L -o apk/facebook.apk \
+            "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
+          ls -lh apk/
+
+      - name: AVD cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-34
+
+      - name: Create AVD (if not cached)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
           target: google_apis
           arch: x86_64
-          force-avd-creation: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          script: echo "AVD created."
+
+      - name: Boot emulator, install APK, screenshot
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           disable-animations: true
           script: |
-            mkdir -p backup
-
             adb wait-for-device
+            adb shell input keyevent 82
 
-            curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
+            echo "=== Installing APK ==="
+            adb install -r apk/facebook.apk
 
-            echo "=== Pushing APK ==="
-            adb push facebook.apk /sdcard/Download/facebook.apk
+            echo "=== Confirming package is present ==="
+            adb shell pm list packages | grep -i facebook | tee backup/package_check.txt
 
-            echo "=== Installing ==="
-            adb install -r /sdcard/Download/facebook.apk 2>&1 | tee backup/install.log
+            echo "=== Launching app ==="
+            PKG=$(grep -o 'package:.*facebook[^ ]*' backup/package_check.txt | head -n1 | sed 's/package://')
+            MAIN_ACTIVITY=$(adb shell cmd package resolve-activity --brief "$PKG" | tail -n1)
+            adb shell am start -n "$MAIN_ACTIVITY" || adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
+            sleep 8
 
-            adb shell pm list packages | grep -i facebook | tee backup/packages.txt
+            echo "=== Screenshot ==="
+            adb shell screencap -p /sdcard/facebook_installed.png
+            adb pull /sdcard/facebook_installed.png backup/facebook_installed.png
 
-            echo "=== Home Screenshot ==="
-            adb shell screencap -p /sdcard/home.png
-            adb pull /sdcard/home.png backup/
-
-            echo "=== Launching ==="
-            adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1 || true
-            sleep 15
-
-            echo "=== Final Screenshot ==="
-            adb shell screencap -p /sdcard/fb.png
-            adb pull /sdcard/fb.png backup/facebook_launched.png
+      - name: Upload screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: facebook-install-screenshot
+          path: |
+            backup/facebook_installed.png
+            backup/package_check.txt
+          retention-days: 14
+          if-no-files-found: warn

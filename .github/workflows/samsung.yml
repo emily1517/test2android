@@ -7,8 +7,7 @@ on:
 
 jobs:
   run-emulator:
-    runs-on: macos-15
-
+    runs-on: ubuntu-latest   # macOS runners (macos-14/15) can't do HVF nested virtualization — Ubuntu + KVM is the working path
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -19,72 +18,96 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
       - name: Create Artifacts Storage Directory
         run: mkdir -p ${{ github.workspace }}/emulator-screenshots
+
+      - name: AVD Cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-34-google_apis-x86_64-v2
+
+      - name: Create AVD Snapshot (cache warm-up, no-op if cache hit)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64             # x86_64 is what gets KVM acceleration on Linux runners
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD created and cached."
 
       - name: Run, Spoof, and Install App
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
           api-level: 34
           target: google_apis
-          arch: arm64-v8a
-          force-avd-creation: true
-          disable-animations: true 
-          emulator-options: -no-window -gpu off -no-audio -no-boot-anim -writable-system -no-metrics -cores 4
-          
+          arch: x86_64
+          force-avd-creation: false
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -writable-system -camera-back none
           script: |
             echo "=== Initializing Host ADB Server ==="
             adb kill-server
             adb start-server
-            
+
             echo "=== Waiting for Android Device Core Loop to Connect ==="
-            # This loop prevents logs from appearing stuck while Android initializes in the background
             until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do
               echo "Emulator is still booting... Checking again in 10 seconds."
               sleep 10
             done
-            
+
             echo "=== Device Fully Booted! Starting Samsung Spoofing ==="
             adb root
             adb remount
-            
-            # Inject Samsung device specifications
+
             adb shell "setprop ro.product.brand samsung"
             adb shell "setprop ro.product.manufacturer samsung"
             adb shell "setprop ro.product.model SM-S938B"
             adb shell "setprop ro.product.name s938b"
             adb shell "setprop ro.product.device qssi"
-            
-            # Force Samsung User-Agent
+
             SAMSUNG_UA="Mozilla/5.0 (Linux; Android 16; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36 SamsungBrowser/30.0"
             adb shell "settings put global webview_user_agent '$SAMSUNG_UA'"
-            
-            # Restart Android framework runtime to bake in spoof settings
+
             echo "Restarting runtime framework to apply Samsung changes..."
             adb shell "stop && start"
-            
+
             echo "Waiting for runtime framework to recover..."
             sleep 20
-            
-            # Keep testing connection until the OS responds post-restart
+
             until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do
               echo "Waiting for device framework restart to finish..."
               sleep 5
             done
-            
+
             echo "=== Downloading Facebook APK ==="
-            curl -L -o facebook.apk "https://github.com"
-            
+            # NOTE: this must point at an APK YOU host (e.g. a GitHub Release asset in this
+            # repo, or something pulled via your rclone/Drive pipeline). There is no official
+            # direct-download APK URL from Meta — the previous URL just saved github.com's HTML.
+            curl -L -o facebook.apk "REPLACE_WITH_YOUR_HOSTED_APK_URL"
+
             echo "=== Installing Facebook App ==="
             adb install -r -d facebook.apk
-            
+
             echo "=== Launching Facebook App ==="
             adb shell input keyevent 82
             adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1
-            
+
             echo "Giving Facebook 15 seconds to initialize..."
             sleep 15
-            
+
             echo "=== Capturing Verification Screenshot ==="
             adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/facebook-samsung-success.png
             echo "Workflow process finished successfully!"

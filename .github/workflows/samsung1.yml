@@ -126,8 +126,8 @@ jobs:
 
             # Define variables (CHANGE THESE WITH YOUR CREDENTIALS)
             PKG="com.facebook.katana"
-            EMAIL="your_email@example.com"          # ←←← CHANGE THIS
-            PASSWORD="your_password_here"           # ←←← CHANGE THIS
+            EMAIL="janamoore@momnow.seedit.cfd"          # ←←← CHANGE THIS
+            PASSWORD="Pygames@12369"           # ←←← CHANGE THIS
 
             echo "=== Launching app via monkey (category LAUNCHER) ==="
             adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1

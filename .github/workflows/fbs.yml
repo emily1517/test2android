@@ -3,8 +3,8 @@ on:
   workflow_dispatch:
 
 env:
-  EMAIL: "marlenebarhorst@momnow.seedit.cfd"
-  PASSWORD: "Pygames@12369"
+  EMAIL: "oliviadavis@jave.seedit.cfd"
+  PASSWORD: "Svhde@1883"
 
 jobs:
   install-and-screenshot:
@@ -134,6 +134,17 @@ jobs:
                               return
                   print("")
 
+              elif mode == "dump_text_summary":
+                  # Debug helper: print every node's class/resource-id/text/content-desc/bounds
+                  for n in nodes:
+                      cls = n.get("class") or ""
+                      rid = n.get("resource-id") or ""
+                      txt = n.get("text") or ""
+                      desc = n.get("content-desc") or ""
+                      bounds = n.get("bounds") or ""
+                      if cls or rid or txt or desc:
+                          print(f"class={cls} | resource-id={rid} | text={txt!r} | desc={desc!r} | bounds={bounds}")
+
               else:
                   print("")
 
@@ -148,6 +159,11 @@ jobs:
           set -x
           adb wait-for-device
           adb shell input keyevent 82
+
+          echo "=== Disabling Android Autofill service (prevents wrong-credential injection) ==="
+          adb shell settings put secure autofill_service null
+          adb shell settings put global autofill_service null
+          adb shell settings put secure autofill_service ""
 
           echo "=== Installing APK ==="
           adb install -r apk/facebook.apk
@@ -170,14 +186,19 @@ jobs:
 
           DUMP="backup/window_dump_current.xml"
 
-          # Redump the live UI hierarchy into $DUMP
           refresh_dump() {
             adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1
             adb pull /sdcard/window_dump.xml "$DUMP" > /dev/null 2>&1
           }
 
+          # Save a permanent copy of the current dump + a human-readable summary for debugging
+          snapshot_dump() {
+            local label="$1"
+            cp "$DUMP" "backup/dump_${label}.xml"
+            python3 ui_helpers.py "$DUMP" dump_text_summary > "backup/dump_${label}_summary.txt"
+          }
+
           # wait_for <description> <check-command-string> <max-attempts> <interval-seconds>
-          # check-command-string is eval'd after each refresh_dump; return 0 = found
           wait_for() {
             local desc="$1" check="$2" max="$3" interval="$4"
             local n=0
@@ -195,10 +216,23 @@ jobs:
             return 1
           }
 
+          # Clear an EditText field completely before typing (defeats stale/autofilled text)
+          # $1 x, $2 y
+          clear_and_focus_field() {
+            local x="$1" y="$2"
+            adb shell input tap "$x" "$y"
+            sleep 1
+            adb shell input keyevent 123   # KEYCODE_MOVE_END
+            for _ in $(seq 1 40); do
+              adb shell input keyevent 67  # KEYCODE_DEL
+            done
+          }
+
           echo "=== Step 1: wait for either 'I already have a profile' OR a real login field to appear ==="
           wait_for "profile/login screen (post-splash)" \
             'grep -qi "already have a profile" "$DUMP" || [ "$(python3 ui_helpers.py "$DUMP" editcount)" -ge 1 ]' \
             20 3
+          snapshot_dump "step1_initial"
 
           if grep -qi "already have a profile" "$DUMP"; then
             echo "=== 'I already have a profile' screen detected — screenshotting ==="
@@ -216,6 +250,7 @@ jobs:
               wait_for "login form (EditText fields)" \
                 '[ "$(python3 ui_helpers.py "$DUMP" editcount)" -ge 1 ]' \
                 15 2
+              snapshot_dump "step2_after_profile_tap"
 
               echo "=== Screenshotting after tapping profile option ==="
               adb shell screencap -p /sdcard/after_profile_tap.png
@@ -230,8 +265,9 @@ jobs:
           echo "=== Screenshotting login screen ==="
           adb shell screencap -p /sdcard/login_screen.png
           adb pull /sdcard/login_screen.png backup/login_screen.png
+          snapshot_dump "step3_login_screen"
 
-          echo "=== Step 2: fill email field (with verification + retry) ==="
+          echo "=== Step 2: fill email field (clear first, then verify EXACT match, retry on mismatch) ==="
           EMAIL_FILLED=0
           for attempt in 1 2 3; do
             refresh_dump
@@ -243,24 +279,24 @@ jobs:
             fi
             EX=$(echo "$EMAIL_COORDS" | cut -d' ' -f1)
             EY=$(echo "$EMAIL_COORDS" | cut -d' ' -f2)
-            echo "=== Attempt $attempt: tapping email field at ($EX, $EY) ==="
-            adb shell input tap "$EX" "$EY"
-            sleep 1
+            echo "=== Attempt $attempt: clearing + tapping email field at ($EX, $EY) ==="
+            clear_and_focus_field "$EX" "$EY"
             adb shell input text "${EMAIL//@/\\@}"
             sleep 1
 
             refresh_dump
             VALUE=$(python3 ui_helpers.py "$DUMP" field_value 0)
-            if [ -n "$VALUE" ]; then
-              echo "=== Email field verified non-empty: [$VALUE] ==="
+            echo "=== Email field now reads: [$VALUE] (expected: [$EMAIL]) ==="
+            if [ "$VALUE" = "$EMAIL" ]; then
+              echo "=== Email field verified EXACT match ==="
               EMAIL_FILLED=1
               break
             fi
-            echo "!!! Email field still empty after typing, retrying (attempt $attempt) !!!"
+            echo "!!! Email field mismatch (got autofill or partial text), retrying (attempt $attempt) !!!"
           done
-          [ "$EMAIL_FILLED" -eq 0 ] && echo "!!! WARNING: email field could not be verified as filled !!!"
+          [ "$EMAIL_FILLED" -eq 0 ] && echo "!!! WARNING: email field could not be verified as correctly filled !!!"
 
-          echo "=== Step 3: fill password field (with verification + retry) ==="
+          echo "=== Step 3: fill password field (clear first, then verify non-empty, retry) ==="
           PASSWORD_FILLED=0
           for attempt in 1 2 3; do
             refresh_dump
@@ -272,16 +308,16 @@ jobs:
             fi
             PX=$(echo "$PASS_COORDS" | cut -d' ' -f1)
             PY=$(echo "$PASS_COORDS" | cut -d' ' -f2)
-            echo "=== Attempt $attempt: tapping password field at ($PX, $PY) ==="
-            adb shell input tap "$PX" "$PY"
-            sleep 1
+            echo "=== Attempt $attempt: clearing + tapping password field at ($PX, $PY) ==="
+            clear_and_focus_field "$PX" "$PY"
             adb shell input text "${PASSWORD//@/\\@}"
             sleep 1
 
             refresh_dump
             VALUE=$(python3 ui_helpers.py "$DUMP" field_value 1)
+            LEN=${#VALUE}
+            echo "=== Password field now has $LEN char(s) of masked/plain text ==="
             if [ -n "$VALUE" ]; then
-              echo "=== Password field verified non-empty ==="
               PASSWORD_FILLED=1
               break
             fi
@@ -292,8 +328,8 @@ jobs:
           echo "=== Screenshotting after entering credentials ==="
           adb shell screencap -p /sdcard/after_credentials_entered.png
           adb pull /sdcard/after_credentials_entered.png backup/after_credentials_entered.png
+          snapshot_dump "step4_after_credentials"
 
-          # Dismiss keyboard so it doesn't cover the login button
           adb shell input keyevent 111
           sleep 1
 
@@ -311,11 +347,6 @@ jobs:
               echo "=== Tapping Login button at ($LBX, $LBY) ==="
               adb shell input tap "$LBX" "$LBY"
               LOGIN_DONE=1
-
-              sleep 3
-              echo "=== Screenshotting after login tap ==="
-              adb shell screencap -p /sdcard/after_login_tap.png
-              adb pull /sdcard/after_login_tap.png backup/after_login_tap.png
             else
               echo "!!! Could not find Login button bounds !!!"
             fi
@@ -323,12 +354,23 @@ jobs:
             echo "!!! Skipping Login tap because email/password were not confirmed filled !!!"
           fi
 
+          echo "=== Step 5: debug-capture whatever screen appears after login, checking every 3s for 30s ==="
+          for j in $(seq 1 10); do
+            sleep 3
+            refresh_dump
+            snapshot_dump "step5_post_login_${j}"
+            adb shell screencap -p /sdcard/post_login_${j}.png
+            adb pull /sdcard/post_login_${j}.png "backup/post_login_${j}.png"
+            echo "--- Post-login capture ${j} at $((j*3))s done ---"
+          done
+
           echo "=== Confirming resumed activity ==="
           adb shell dumpsys activity activities | grep -i mResumedActivity | tee backup/resumed_activity.txt
 
           echo "=== Final screenshot ==="
           adb shell screencap -p /sdcard/facebook_installed.png
           adb pull /sdcard/facebook_installed.png backup/facebook_installed.png
+          snapshot_dump "step6_final"
           exit 0
           EOF
           chmod +x run.sh
@@ -353,18 +395,15 @@ jobs:
           echo "--- resumed_activity.txt ---"
           cat backup/resumed_activity.txt 2>/dev/null || echo "(none)"
 
-      - name: Upload screenshot
+      - name: Upload screenshots, XML dumps, and debug summaries
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: facebook-install-screenshot
+          name: facebook-install-debug-bundle
           path: |
-            backup/facebook_installed.png
-            backup/profile_screen.png
-            backup/after_profile_tap.png
-            backup/login_screen.png
-            backup/after_credentials_entered.png
-            backup/after_login_tap.png
+            backup/*.png
+            backup/*.xml
+            backup/*_summary.txt
             backup/package_check.txt
             backup/all_packages.txt
             backup/resumed_activity.txt

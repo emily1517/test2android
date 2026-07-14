@@ -1,4 +1,4 @@
-name: Facebook Screenshot
+name: Facebook Screenshot Now
 
 on:
   workflow_dispatch:
@@ -10,12 +10,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: KVM
+      - name: Enable KVM
         run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666"' | sudo tee /etc/udev/rules.d/99-kvm.rules
-          sudo udevadm control --reload-rules && sudo udevadm trigger
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger
 
-      - name: Download & Run
+      - name: Download APK from Release + Run
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -23,24 +24,31 @@ jobs:
           arch: x86_64
           force-avd-creation: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim
+          disable-animations: true
           script: |
             mkdir -p backup
+
             adb wait-for-device
 
-            # Download directly on host and push
-            curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook.apk" || echo "No APK at that URL"
+            # Download from your GitHub Release
+            curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
+
             adb push facebook.apk /sdcard/facebook.apk
 
+            echo "=== Installing ==="
             adb install -r /sdcard/facebook.apk 2>&1 | tee backup/install.log
 
             adb shell screencap -p /sdcard/home.png && adb pull /sdcard/home.png backup/
+            
+            echo "=== Launching Facebook ==="
             adb shell am start -n com.facebook.katana/.LoginActivity || true
-            sleep 10
-            adb shell screencap -p /sdcard/fb.png && adb pull /sdcard/fb.png backup/facebook_screenshot.png
+            sleep 15
+
+            adb shell screencap -p /sdcard/fb.png && adb pull /sdcard/fb.png backup/facebook_launched.png
 
       - name: Upload Screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: facebook-screenshot
-          path: backup/facebook_screenshot.png
+          path: backup/facebook_launched.png

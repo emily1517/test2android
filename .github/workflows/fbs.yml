@@ -48,7 +48,6 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: echo "AVD created."
 
-
       - name: Write install-and-launch script
         run: |
           cat > run.sh << 'EOF'
@@ -56,65 +55,102 @@ jobs:
           set -x
           adb wait-for-device
           adb shell input keyevent 82
+
           echo "=== Installing APK ==="
           adb install -r apk/facebook.apk
+
           echo "=== Confirming package is present ==="
           adb shell pm list packages > backup/all_packages.txt
           PKG=$(grep -i facebook backup/all_packages.txt | head -n1 | sed 's/^package://' | tr -d '\r')
           echo "Resolved package: [$PKG]"
           echo "$PKG" > backup/package_check.txt
+
           if [ -z "$PKG" ]; then
             echo "ERROR: package not found after install"
             adb shell screencap -p /sdcard/facebook_installed.png
             adb pull /sdcard/facebook_installed.png backup/facebook_installed.png
             exit 0
           fi
-          echo "=== Launching app via monkey (category LAUNCHER) ==="
-          adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
 
-          echo "=== Waiting for app to fully load (up to 60s) ==="
-          for i in $(seq 1 12); do
-            sleep 5
-            adb shell screencap -p /sdcard/check_${i}.png
-            adb pull /sdcard/check_${i}.png backup/check_${i}.png
-            echo "Captured check $i at $((i*5))s"
-          done
+echo "=== Launching app via monkey (category LAUNCHER) ==="
+adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
 
-          # === NEW PART: Login automation + 2 screenshots (before + after) ===
-          echo "=== Waiting extra time for login screen ==="
-          sleep 8
+echo "=== Waiting for first screen (profile-picker OR login), checking every 3s up to 60s ==="
 
-          echo "=== Screenshot BEFORE login ==="
-          adb shell screencap -p /sdcard/before_login.png
-          adb pull /sdcard/before_login.png backup/before_login.png
+FOUND_PROFILE_SCREEN=0
+TAPPED_PROFILE=0
+FOUND_LOGIN_SCREEN=0
 
-          echo "=== Entering email and password ==="
-          # Replace with your actual email/password
-          adb shell input text "marlenebarhorst@momnow.seedit.cfd"
-          sleep 2
-          adb shell input keyevent 61  # TAB to next field (password)
-          sleep 1
-          adb shell input text "Pygames@12369"
-          sleep 2
+for i in $(seq 1 20); do
+  sleep 3
 
-          echo "=== Tapping Login button (coordinate-based - adjust if needed) ==="
-          # Common Facebook login button coordinates on standard emulator (API 34). You may need to tweak these.
-          adb shell input tap 540 1400
-          sleep 8
+  # Dump current UI hierarchy
+  adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1
+  adb pull /sdcard/window_dump.xml backup/window_dump_${i}.xml > /dev/null 2>&1
 
-          echo "=== Screenshot AFTER login ==="
-          adb shell screencap -p /sdcard/after_login.png
-          adb pull /sdcard/after_login.png backup/after_login.png
-          # === END OF NEW PART ===
+  DUMP="backup/window_dump_${i}.xml"
+
+  # --- Check for "I already have a profile" ---
+  if [ "$TAPPED_PROFILE" -eq 0 ] && grep -qi "already have a profile" "$DUMP"; then
+    echo "=== [${i}] 'I already have a profile' screen detected — screenshotting ==="
+    adb shell screencap -p /sdcard/profile_screen.png
+    adb pull /sdcard/profile_screen.png backup/profile_screen.png
+    FOUND_PROFILE_SCREEN=1
+
+    # Extract bounds of the node containing the text, e.g. bounds="[x1,y1][x2,y2]"
+    BOUNDS=$(grep -o 'text="[^"]*[Aa]lready have a profile[^"]*"[^>]*bounds="\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]"' "$DUMP" | grep -o '\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]' | head -n 1)
+
+    if [ -n "$BOUNDS" ]; then
+      X1=$(echo "$BOUNDS" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\1/')
+      Y1=$(echo "$BOUNDS" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\2/')
+      X2=$(echo "$BOUNDS" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\3/')
+      Y2=$(echo "$BOUNDS" | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\4/')
+      TAP_X=$(( (X1 + X2) / 2 ))
+      TAP_Y=$(( (Y1 + Y2) / 2 ))
+
+      echo "=== Tapping 'I already have a profile' at ($TAP_X, $TAP_Y) ==="
+      adb shell input tap "$TAP_X" "$TAP_Y"
+      TAPPED_PROFILE=1
+
+      sleep 2
+      echo "=== Screenshotting after tapping profile option ==="
+      adb shell screencap -p /sdcard/after_profile_tap.png
+      adb pull /sdcard/after_profile_tap.png backup/after_profile_tap.png
+    else
+      echo "!!! Could not parse bounds for 'I already have a profile' node !!!"
+    fi
+    continue
+  fi
+
+  # --- Check for login screen (adjust keywords to match your app) ---
+  if [ "$FOUND_LOGIN_SCREEN" -eq 0 ] && grep -Eqi 'log ?in|sign ?in|email|password' "$DUMP"; then
+    echo "=== [${i}] Login screen detected — screenshotting ==="
+    adb shell screencap -p /sdcard/login_screen.png
+    adb pull /sdcard/login_screen.png backup/login_screen.png
+    FOUND_LOGIN_SCREEN=1
+  fi
+
+  echo "Checked at $((i*3))s — profile_screen=$FOUND_PROFILE_SCREEN tapped=$TAPPED_PROFILE login_screen=$FOUND_LOGIN_SCREEN"
+
+  # Stop early once both milestones are done (tap made, login screen also seen)
+  if [ "$TAPPED_PROFILE" -eq 1 ] && [ "$FOUND_LOGIN_SCREEN" -eq 1 ]; then
+    echo "=== Both steps complete, exiting loop early ==="
+    break
+  fi
+done
+
+echo "=== Done. Screenshots saved in backup/: profile_screen.png, after_profile_tap.png, login_screen.png ==="
 
           echo "=== Confirming resumed activity ==="
           adb shell dumpsys activity activities | grep -i mResumedActivity | tee backup/resumed_activity.txt
+
           echo "=== Final screenshot ==="
           adb shell screencap -p /sdcard/facebook_installed.png
           adb pull /sdcard/facebook_installed.png backup/facebook_installed.png
           exit 0
           EOF
           chmod +x run.sh
+
       - name: Boot emulator, install APK, screenshot
         uses: reactivecircus/android-emulator-runner@v2
         with:

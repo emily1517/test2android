@@ -1,4 +1,4 @@
-name: Run Samsung Spoofed Emulator with Screenshots
+name: Install Facebook on samsung
 
 on:
   push:
@@ -11,7 +11,7 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/actions/checkout@v4
+        uses: actions/checkout@v4
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
@@ -19,11 +19,10 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # Directory where screenshots will be saved on the host runner machine
       - name: Create Artifacts Storage Directory
         run: mkdir -p ${{ github.workspace }}/emulator-screenshots
 
-      - name: Run and Configure Samsung Emulator
+      - name: Run, Spoof, and Install App
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
           api-level: 34
@@ -38,39 +37,55 @@ jobs:
             adb root
             adb remount
             
-            # Inject Samsung parameters
+            # Inject Samsung device specifications
             adb shell "setprop ro.product.brand samsung"
             adb shell "setprop ro.product.manufacturer samsung"
             adb shell "setprop ro.product.model SM-S938B"
             adb shell "setprop ro.product.name s938b"
             adb shell "setprop ro.product.device qssi"
             
-            # Global WebView User-Agent Force
+            # Force Samsung User-Agent
             SAMSUNG_UA="Mozilla/5.0 (Linux; Android 16; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36 SamsungBrowser/30.0"
             adb shell "settings put global webview_user_agent '$SAMSUNG_UA'"
             
-            # Restart Android container framework runtime
+            # Restart Android framework runtime to bake in spoof settings
             adb shell "stop && start"
             sleep 15
             
-            echo "=== Capture Emulator State Screenshot ==="
-            # Captures the Android OS frame buffers directly and extracts to a clean local host PNG
-            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/samsung-device-success.png
+            echo "=== Downloading Facebook APK ==="
+            # Pull down the target APK via curl from the designated repo
+            curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
             
-            echo "Device masked. Picture taken successfully!"
+            echo "=== Installing Facebook App ==="
+            # Force install the app (-r keeps configurations, -d allows downgrade if needed)
+            adb install -r -d facebook.apk
+            
+            echo "=== Launching Facebook App ==="
+            # Wake up the screen and unlock it so app loads into interactive frame buffer
+            adb shell input keyevent 82
+            
+            # Launch the primary activity wrapper belonging to Facebook core
+            adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1
+            
+            # Allow the application runtime window 8 seconds to boot up and initialize
+            sleep 8
+            
+            echo "=== Capturing Verification Screenshot ==="
+            # Take a full UI snapshot of the device running Facebook inside the Samsung environment
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/facebook-samsung-success.png
+            
+            echo "Process completed successfully!"
 
-      # Upload the taken image to secure GitHub Artifact cloud vaults
       - name: Upload Screenshot Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: samsung-emulator-verification-screens
+          name: facebook-samsung-screenshot
           path: ${{ github.workspace }}/emulator-screenshots/
           retention-days: 7
 
-      # Automatically prints out the direct layout page to quickly click and acquire files
       - name: Output Artifact Download Summary Link
         run: |
-          echo "### 🚀 Samsung Emulator Environment Ready!" >> $GITHUB_STEP_SUMMARY
-          echo "Your spoofed device configuration snapshot is captured." >> $GITHUB_STEP_SUMMARY
+          echo "### 🚀 Facebook App Successfully Installed!" >> $GITHUB_STEP_SUMMARY
+          echo "Your spoofed Samsung workspace has initialized the requested application." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "🔗 **[Click Here to Open Run Summary to Download Artifacts File Package](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**" >> $GITHUB_STEP_SUMMARY

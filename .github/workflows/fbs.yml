@@ -3,8 +3,8 @@ on:
   workflow_dispatch:
 
 env:
-  EMAIL: "oliviadavis@jave.seedit.cfd"
-  PASSWORD: "Svhde@1883"
+  EMAIL: "sharongerardi@momnow.seedit.cfd"
+  PASSWORD: "Pygames@12369"
 
 jobs:
   install-and-screenshot:

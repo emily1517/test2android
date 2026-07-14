@@ -48,6 +48,7 @@ jobs:
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
           script: echo "AVD created."
 
+
       - name: Write install-and-launch script
         run: |
           cat > run.sh << 'EOF'
@@ -55,27 +56,23 @@ jobs:
           set -x
           adb wait-for-device
           adb shell input keyevent 82
-
           echo "=== Installing APK ==="
           adb install -r apk/facebook.apk
-
           echo "=== Confirming package is present ==="
           adb shell pm list packages > backup/all_packages.txt
           PKG=$(grep -i facebook backup/all_packages.txt | head -n1 | sed 's/^package://' | tr -d '\r')
           echo "Resolved package: [$PKG]"
           echo "$PKG" > backup/package_check.txt
-
           if [ -z "$PKG" ]; then
             echo "ERROR: package not found after install"
             adb shell screencap -p /sdcard/facebook_installed.png
             adb pull /sdcard/facebook_installed.png backup/facebook_installed.png
             exit 0
           fi
-
           echo "=== Launching app via monkey (category LAUNCHER) ==="
           adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
 
-          echo "=== Waiting for app to fully load (up to 60s, checking every 5s) ==="
+          echo "=== Waiting for app to fully load (up to 60s) ==="
           for i in $(seq 1 12); do
             sleep 5
             adb shell screencap -p /sdcard/check_${i}.png
@@ -83,16 +80,41 @@ jobs:
             echo "Captured check $i at $((i*5))s"
           done
 
+          # === NEW PART: Login automation + 2 screenshots (before + after) ===
+          echo "=== Waiting extra time for login screen ==="
+          sleep 8
+
+          echo "=== Screenshot BEFORE login ==="
+          adb shell screencap -p /sdcard/before_login.png
+          adb pull /sdcard/before_login.png backup/before_login.png
+
+          echo "=== Entering email and password ==="
+          # Replace with your actual email/password
+          adb shell input text "marlenebarhorst@momnow.seedit.cfd"
+          sleep 2
+          adb shell input keyevent 61  # TAB to next field (password)
+          sleep 1
+          adb shell input text "Pygames@12369"
+          sleep 2
+
+          echo "=== Tapping Login button (coordinate-based - adjust if needed) ==="
+          # Common Facebook login button coordinates on standard emulator (API 34). You may need to tweak these.
+          adb shell input tap 540 1400
+          sleep 8
+
+          echo "=== Screenshot AFTER login ==="
+          adb shell screencap -p /sdcard/after_login.png
+          adb pull /sdcard/after_login.png backup/after_login.png
+          # === END OF NEW PART ===
+
           echo "=== Confirming resumed activity ==="
           adb shell dumpsys activity activities | grep -i mResumedActivity | tee backup/resumed_activity.txt
-
           echo "=== Final screenshot ==="
           adb shell screencap -p /sdcard/facebook_installed.png
           adb pull /sdcard/facebook_installed.png backup/facebook_installed.png
           exit 0
           EOF
           chmod +x run.sh
-
       - name: Boot emulator, install APK, screenshot
         uses: reactivecircus/android-emulator-runner@v2
         with:

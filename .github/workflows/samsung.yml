@@ -30,16 +30,21 @@ jobs:
           arch: arm64-v8a
           force-avd-creation: true
           disable-animations: true 
-          # FIXED: Added -no-metrics and -cores 4 flags to bypass log warnings
           emulator-options: -no-window -gpu off -no-audio -no-boot-anim -writable-system -no-metrics -cores 4
           
           script: |
-            echo "=== Initializing ADB Connection ==="
-            # Force start the adb background server to fix port 5037 connection error
+            echo "=== Initializing Host ADB Server ==="
+            adb kill-server
             adb start-server
-            adb wait-for-device
             
-            echo "=== Emulator Booted! Starting Samsung Spoofing ==="
+            echo "=== Waiting for Android Device Core Loop to Connect ==="
+            # This loop prevents logs from appearing stuck while Android initializes in the background
+            until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do
+              echo "Emulator is still booting... Checking again in 10 seconds."
+              sleep 10
+            done
+            
+            echo "=== Device Fully Booted! Starting Samsung Spoofing ==="
             adb root
             adb remount
             
@@ -55,12 +60,17 @@ jobs:
             adb shell "settings put global webview_user_agent '$SAMSUNG_UA'"
             
             # Restart Android framework runtime to bake in spoof settings
-            echo "Restarting runtime..."
+            echo "Restarting runtime framework to apply Samsung changes..."
             adb shell "stop && start"
+            
+            echo "Waiting for runtime framework to recover..."
             sleep 20
             
-            # Ensure device is reconnected after runtime reboot
-            adb wait-for-device
+            # Keep testing connection until the OS responds post-restart
+            until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do
+              echo "Waiting for device framework restart to finish..."
+              sleep 5
+            done
             
             echo "=== Downloading Facebook APK ==="
             curl -L -o facebook.apk "https://github.com"
@@ -71,10 +81,13 @@ jobs:
             echo "=== Launching Facebook App ==="
             adb shell input keyevent 82
             adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1
-            sleep 10
+            
+            echo "Giving Facebook 15 seconds to initialize..."
+            sleep 15
             
             echo "=== Capturing Verification Screenshot ==="
             adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/facebook-samsung-success.png
+            echo "Workflow process finished successfully!"
 
       - name: Upload Screenshot Artifacts
         uses: actions/upload-artifact@v4

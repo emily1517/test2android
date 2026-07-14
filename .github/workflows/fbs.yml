@@ -1,54 +1,4 @@
-name: Android - Install Facebook APK (screenshot proof)
-on:
-  workflow_dispatch:
-
-jobs:
-  install-and-screenshot:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-
-      - name: Enable KVM group perms
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Download Facebook APK
-        run: |
-          mkdir -p apk backup
-          curl -L -o apk/facebook.apk \
-            "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
-          ls -lh apk/
-
-      - name: AVD cache
-        uses: actions/cache@v4
-        id: avd-cache
-        with:
-          path: |
-            ~/.android/avd/*
-            ~/.android/adb*
-          key: avd-34
-
-      - name: Create AVD (if not cached)
-        if: steps.avd-cache.outputs.cache-hit != 'true'
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 34
-          target: google_apis
-          arch: x86_64
-          force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: echo "AVD created."
-
-      - name: Write install-and-launch script
+- name: Write install-and-launch script
         run: |
           cat > run.sh << 'EOF'
           #!/bin/bash
@@ -74,47 +24,21 @@ jobs:
 
           echo "=== Launching app via monkey (category LAUNCHER) ==="
           adb shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1
-          sleep 8
+
+          echo "=== Waiting for app to fully load (up to 60s, checking every 5s) ==="
+          for i in $(seq 1 12); do
+            sleep 5
+            adb shell screencap -p /sdcard/check_${i}.png
+            adb pull /sdcard/check_${i}.png backup/check_${i}.png
+            echo "Captured check $i at $((i*5))s"
+          done
 
           echo "=== Confirming resumed activity ==="
           adb shell dumpsys activity activities | grep -i mResumedActivity | tee backup/resumed_activity.txt
 
-          echo "=== Screenshot ==="
+          echo "=== Final screenshot ==="
           adb shell screencap -p /sdcard/facebook_installed.png
           adb pull /sdcard/facebook_installed.png backup/facebook_installed.png
           exit 0
           EOF
           chmod +x run.sh
-
-      - name: Boot emulator, install APK, screenshot
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 34
-          target: google_apis
-          arch: x86_64
-          force-avd-creation: false
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          disable-animations: true
-          script: bash ${{ github.workspace }}/run.sh
-
-      - name: Show captured files
-        if: always()
-        run: |
-          ls -lh backup/ || echo "backup dir empty or missing"
-          echo "--- package_check.txt ---"
-          cat backup/package_check.txt 2>/dev/null || echo "(none)"
-          echo "--- resumed_activity.txt ---"
-          cat backup/resumed_activity.txt 2>/dev/null || echo "(none)"
-
-      - name: Upload screenshot
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: facebook-install-screenshot
-          path: |
-            backup/facebook_installed.png
-            backup/package_check.txt
-            backup/all_packages.txt
-            backup/resumed_activity.txt
-          retention-days: 14
-          if-no-files-found: warn

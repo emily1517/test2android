@@ -104,7 +104,7 @@ jobs:
             # adb/uiautomator steps here (launch app, tap fields, screenshot, etc.)
 
             echo "=== Waiting for post-login screen to settle ==="
-            sleep 5
+            sleep 15
 
             echo "=== Capturing screenshot after login ==="
             adb exec-out screencap -p > backup/after_login.png

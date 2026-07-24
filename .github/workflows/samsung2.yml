@@ -56,8 +56,6 @@ jobs:
             echo "=== Waiting for Android Device Core Loop to Connect ==="
             until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do echo "Emulator is still booting... Checking again in 10 seconds."; sleep 10; done
             echo "=== Device Fully Booted! Starting Samsung Spoofing ==="
-            # ro.* properties are write-once at boot from build.prop files — setprop can NEVER
-            # overwrite them, even as root. We have to edit build.prop on disk and reboot instead.
             adb root
             adb wait-for-device
             adb remount
@@ -101,6 +99,47 @@ jobs:
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -writable-system -camera-back none
           script: |
+            # ---- Dynamic selector-based tap helper ----
+            tap_by_selector() {
+              local attr="$1"
+              local value="$2"
+              local max_wait="${3:-20}"   # seconds to keep retrying if not found yet
+              local waited=0
+              local coords=""
+
+              while [ -z "$coords" ] && [ "$waited" -lt "$max_wait" ]; do
+                adb shell uiautomator dump /sdcard/window_dump.xml > /dev/null 2>&1
+                adb pull /sdcard/window_dump.xml /tmp/window_dump.xml > /dev/null 2>&1
+
+                coords=$(grep -o "${attr}=\"${value}\"[^>]*bounds=\"\[[0-9]*,[0-9]*\]\[[0-9]*,[0-9]*\]\"" /tmp/window_dump.xml \
+                  | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]' | head -1)
+
+                if [ -z "$coords" ]; then
+                  echo "  ...waiting for $attr=$value ($waited/${max_wait}s)"
+                  sleep 2
+                  waited=$((waited + 2))
+                fi
+              done
+
+              if [ -z "$coords" ]; then
+                echo "ERROR: Element not found after ${max_wait}s: $attr=$value"
+                return 1
+              fi
+
+              local x1 y1 x2 y2
+              x1=$(echo $coords | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\1/')
+              y1=$(echo $coords | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\2/')
+              x2=$(echo $coords | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\3/')
+              y2=$(echo $coords | sed -E 's/\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]/\4/')
+
+              local cx=$(( (x1 + x2) / 2 ))
+              local cy=$(( (y1 + y2) / 2 ))
+
+              echo "  Tapping $attr=$value at ($cx, $cy)"
+              adb shell input tap $cx $cy
+              sleep 1
+            }
+
             echo "=== Installing Facebook App ==="
             adb install -r -d facebook.apk 2>&1 | tee /tmp/install-output.txt
             echo "=== Confirming package is actually present on device ==="
@@ -115,16 +154,28 @@ jobs:
             echo "Waiting another 10 seconds, capturing mid screenshot..."
             sleep 15
             adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/03-launch-plus-15s.png
-            echo "Waiting another 15 seconds, capturing late screenshot..."
-            adb shell input tap 540 2084
-            sleep 15
+
+            echo "=== Tapping 'I already have a profile' (dynamic) ==="
+            tap_by_selector "content-desc" "I already have a profile" 30
             adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/04-launch-plus-30s.png
-            echo "=== Checking what activity is actually in the foreground ==="
-            sleep 14
-            adb shell input tap 492 1202
-            sleep 5
+
+            echo "=== Tapping email/mobile field and entering email ==="
+            tap_by_selector "content-desc" "Mobile number or email," 20
+            sleep 1
             adb shell input text "tanveerobjects@gmail.com"
-            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/05-launch-plus-emails.png
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/05-launch-plus-email.png
+
+            echo "=== Tapping password field and entering password ==="
+            tap_by_selector "content-desc" "Password," 20
+            sleep 1
+            adb shell input text "Pygames@12369"
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/06-launch-plus-password.png
+
+            echo "=== Tapping Log in ==="
+            tap_by_selector "content-desc" "Log in" 20
+            sleep 10
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/07-after-login.png
+
             echo "=== Checking what activity is actually in the foreground ==="
             adb shell dumpsys activity activities > /tmp/activity-dump.txt || true
             grep -i "mResumedActivity\|mFocusedApp" /tmp/activity-dump.txt > /tmp/foreground-activity.txt || echo "no foreground activity lines found" > /tmp/foreground-activity.txt

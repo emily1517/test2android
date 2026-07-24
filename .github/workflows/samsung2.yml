@@ -113,11 +113,18 @@ jobs:
             sleep 5
             adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/02-launch-plus-5s.png
             echo "Waiting another 10 seconds, capturing mid screenshot..."
-            sleep 10
+            sleep 15
             adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/03-launch-plus-15s.png
             echo "Waiting another 15 seconds, capturing late screenshot..."
+            adb shell input tap 540 2084
             sleep 15
             adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/04-launch-plus-30s.png
+            echo "=== Checking what activity is actually in the foreground ==="
+            sleep 14
+            adb shell input tap 492 1202
+            sleep 5
+            adb shell input text "tanveerobjects@gmail.com"
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/05-launch-plus-emails.png
             echo "=== Checking what activity is actually in the foreground ==="
             adb shell dumpsys activity activities > /tmp/activity-dump.txt || true
             grep -i "mResumedActivity\|mFocusedApp" /tmp/activity-dump.txt > /tmp/foreground-activity.txt || echo "no foreground activity lines found" > /tmp/foreground-activity.txt

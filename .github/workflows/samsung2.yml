@@ -1,4 +1,4 @@
-name: Install Facebook on Samsung Spoofed Emulator
+name: Install Facebook on Samsung Spoofed Emulator1
 on:
   push:
     branches: [ main ]

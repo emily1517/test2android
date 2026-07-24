@@ -1,0 +1,150 @@
+name: Install Facebook monkey
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+jobs:
+  run-emulator:
+    runs-on: ubuntu-latest   # macOS runners (macos-14/15) can't do HVF nested virtualization — Ubuntu + KVM is the working path
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+      - name: Enable KVM group perms
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Create Artifacts Storage Directory
+        run: mkdir -p ${{ github.workspace }}/emulator-screenshots
+      - name: AVD Cache
+        uses: actions/cache@v4
+        id: avd-cache
+        with:
+          path: |
+            ~/.android/avd/*
+            ~/.android/adb*
+          key: avd-34-google_apis-x86_64-v2
+      - name: Create AVD Snapshot (cache warm-up, no-op if cache hit)
+        if: steps.avd-cache.outputs.cache-hit != 'true'
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64             # x86_64 is what gets KVM acceleration on Linux runners
+          force-avd-creation: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          script: echo "AVD created and cached."
+      - name: Run, Spoof, and Install App
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -writable-system -camera-back none
+          script: |
+            echo "=== Initializing Host ADB Server ==="
+            adb kill-server
+            adb start-server
+            echo "=== Waiting for Android Device Core Loop to Connect ==="
+            until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do echo "Emulator is still booting... Checking again in 10 seconds."; sleep 10; done
+            echo "=== Device Fully Booted! Starting Samsung Spoofing ==="
+            # ro.* properties are write-once at boot from build.prop files — setprop can NEVER
+            # overwrite them, even as root. We have to edit build.prop on disk and reboot instead.
+            adb root
+            adb wait-for-device
+            adb remount
+            echo "=== Rebooting so the writable overlay actually takes effect ==="
+            adb reboot
+            adb wait-for-device
+            until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do echo "Waiting for post-remount reboot..."; sleep 5; done
+            adb root
+            adb wait-for-device
+            adb remount
+            echo "=== Patching build.prop with Samsung values ==="
+            adb pull /system/build.prop /tmp/build.prop
+            sed -i -e '/^ro\.product\.brand=/d' -e '/^ro\.product\.manufacturer=/d' -e '/^ro\.product\.model=/d' -e '/^ro\.product\.name=/d' -e '/^ro\.product\.device=/d' /tmp/build.prop
+            printf 'ro.product.brand=samsung\nro.product.manufacturer=samsung\nro.product.model=SM-S938B\nro.product.name=s938bxx\nro.product.device=q6q\n' >> /tmp/build.prop
+            adb push /tmp/build.prop /system/build.prop
+            adb shell chmod 644 /system/build.prop
+            echo "=== Rebooting to apply spoofed build.prop ==="
+            adb reboot
+            adb wait-for-device
+            until adb shell getprop sys.boot_completed 2>/dev/null | grep -q '1'; do echo "Waiting for post-spoof reboot..."; sleep 5; done
+            echo "=== Verifying spoofed properties ==="
+            adb shell getprop ro.product.brand
+            adb shell getprop ro.product.model
+            SAMSUNG_UA="Mozilla/5.0 (Linux; Android 16; SM-S938B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36 SamsungBrowser/30.0"
+            adb shell "settings put global webview_user_agent '$SAMSUNG_UA'"
+            echo "=== Downloading Facebook APK ==="
+            curl -L -o facebook.apk "https://github.com/emily1517/test2android/releases/download/v1/facebook-569-0-0-42-72.apk"
+            echo "=== Verifying downloaded file is a real APK ==="
+            ls -la facebook.apk
+            file facebook.apk
+            unzip -l facebook.apk | head -5 || echo "WARNING: facebook.apk is not a valid zip/apk — download likely returned an error page, not the real file."
+            echo "=== Home screen BEFORE install (baseline) ==="
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/01-home-before-install.png
+      - name: Install and Launch App (adb)
+        uses: ReactiveCircus/android-emulator-runner@v2
+        with:
+          api-level: 34
+          target: google_apis
+          arch: x86_64
+          force-avd-creation: false
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -writable-system -camera-back none
+          script: |
+            echo "=== Installing Facebook App ==="
+            adb install -r -d facebook.apk 2>&1 | tee /tmp/install-output.txt
+            echo "=== Confirming package is actually present on device ==="
+            adb shell pm list packages | grep -i facebook > /tmp/pkg-check.txt || echo "com.facebook.katana NOT found in installed packages list." > /tmp/pkg-check.txt
+            cat /tmp/pkg-check.txt
+            echo "=== Launching Facebook App via monkey ==="
+            adb shell input keyevent 82
+            adb shell monkey -p com.facebook.katana -c android.intent.category.LAUNCHER 1
+            echo "Waiting 5 seconds, sending monkey taps, capturing early screenshot..."
+            sleep 5
+            adb shell monkey -p com.facebook.katana --pct-touch 100 --throttle 500 -v 10
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/02-launch-plus-5s.png
+            echo "Waiting, sending more monkey taps, capturing mid screenshot..."
+            sleep 5
+            adb shell monkey -p com.facebook.katana --pct-touch 100 --throttle 500 -v 10
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/03-launch-plus-15s.png
+            echo "Waiting, sending more monkey taps, capturing late screenshot..."
+            sleep 5
+            adb shell monkey -p com.facebook.katana --pct-touch 100 --throttle 500 -v 10
+            adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/04-launch-plus-30s.png
+            echo "=== Checking what activity is actually in the foreground ==="
+            adb shell dumpsys activity activities > /tmp/activity-dump.txt || true
+            grep -i "mResumedActivity\|mFocusedApp" /tmp/activity-dump.txt > /tmp/foreground-activity.txt || echo "no foreground activity lines found" > /tmp/foreground-activity.txt
+            cat /tmp/foreground-activity.txt
+            echo "=== Checking if the process is even alive (crash detection) ==="
+            adb shell pidof com.facebook.katana > /tmp/facebook-pid.txt || echo "com.facebook.katana is NOT running (crashed or never started)." > /tmp/facebook-pid.txt
+            cat /tmp/facebook-pid.txt
+            echo "=== Dumping recent logcat for crash evidence ==="
+            adb logcat -d -t 3000 > ${{ github.workspace }}/emulator-screenshots/full-logcat.txt
+            grep -i "facebook\|FATAL\|AndroidRuntime\|Fatal signal" ${{ github.workspace }}/emulator-screenshots/full-logcat.txt > ${{ github.workspace }}/emulator-screenshots/facebook-relevant-logcat.txt || echo "No facebook-related crash lines found." > ${{ github.workspace }}/emulator-screenshots/facebook-relevant-logcat.txt
+            cp /tmp/install-output.txt ${{ github.workspace }}/emulator-screenshots/install-output.txt
+            cp /tmp/pkg-check.txt ${{ github.workspace }}/emulator-screenshots/pkg-check.txt
+            cp /tmp/foreground-activity.txt ${{ github.workspace }}/emulator-screenshots/foreground-activity.txt
+            cp /tmp/facebook-pid.txt ${{ github.workspace }}/emulator-screenshots/facebook-pid.txt
+            echo "Workflow finished — upload all files in emulator-screenshots for full diagnosis, not just the screenshots."
+      - name: Upload Screenshot Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: facebook-samsung-screenshot
+          path: ${{ github.workspace }}/emulator-screenshots/
+          retention-days: 7
+      - name: Output Artifact Download Summary Link
+        run: |
+          echo "### 🚀 Facebook App Successfully Installed!" >> $GITHUB_STEP_SUMMARY
+          echo "Your spoofed Samsung workspace has initialized the requested application." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "🔗 **[Click Here to Open Run Summary to Download Artifacts File Package](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})**" >> $GITHUB_STEP_SUMMARY

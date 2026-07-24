@@ -3,15 +3,6 @@ on:
   push:
     branches: [ main ]
   workflow_dispatch:
-    inputs:
-      enable_tmate:
-        description: 'Enable interactive tmate SSH session (pauses workflow for manual adb access)'
-        required: false
-        default: 'true'
-        type: choice
-        options:
-          - 'true'
-          - 'false'
 jobs:
   run-emulator:
     runs-on: ubuntu-latest   # macOS runners (macos-14/15) can't do HVF nested virtualization — Ubuntu + KVM is the working path
@@ -100,31 +91,6 @@ jobs:
             unzip -l facebook.apk | head -5 || echo "WARNING: facebook.apk is not a valid zip/apk — download likely returned an error page, not the real file."
             echo "=== Home screen BEFORE install (baseline) ==="
             adb exec-out screencap -p > ${{ github.workspace }}/emulator-screenshots/01-home-before-install.png
-
-            # ============================================================
-            # INTERACTIVE DEBUG SESSION
-            # At this point the emulator is booted, spoofed to Samsung,
-            # and the ADB server is live. If tmate is enabled, the workflow
-            # pauses here and prints an SSH connection string in the log.
-            # SSH in and you get a real shell on this runner: run `adb`,
-            # `adb shell`, `adb install`, `adb logcat -v time`, etc.
-            # manually, exactly like a local terminal.
-            #
-            # When you're done, type `exit` (or just let it idle out) to
-            # let the rest of the job (auto install/launch/logcat) continue.
-            # ============================================================
-            echo "=== Interactive debug session (tmate) ==="
-            echo "If enabled, connection details will appear below."
-      - name: Interactive SSH debug session (tmate)
-        if: ${{ github.event.inputs.enable_tmate == 'true' || github.event.inputs.enable_tmate == '' }}
-        uses: mxschmitt/action-tmate@v3
-        with:
-          limit-access-to-actor: true
-        timeout-minutes: 30
-        # The job pauses on this step until you SSH in and type `exit`,
-        # or until the timeout above is hit — whichever comes first.
-        # ADB server + booted, spoofed emulator are already available
-        # in this shell since it's the same runner/session.
       - name: Install and Launch App (adb)
         uses: ReactiveCircus/android-emulator-runner@v2
         with:
